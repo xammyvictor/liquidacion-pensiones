@@ -88,41 +88,35 @@ def to_excel(df_liq, df_abonos, nombre_pensionado):
     """
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        # Hoja de Liquidación
         df_liq.to_excel(writer, index=False, sheet_name='Liquidacion')
         workbook = writer.book
         ws_liq = writer.sheets['Liquidacion']
         
-        # Hoja de Abonos
-        df_abonos.to_excel(writer, index=False, sheet_name='Abonos_Realizados')
-        ws_abo = writer.sheets['Abonos_Realizados']
+        df_abonos.to_excel(writer, index=False, sheet_name='Detalle_Abonos')
+        ws_abo = writer.sheets['Detalle_Abonos']
         
-        # Estilos
         fmt_money = workbook.add_format({'num_format': '$#,##0', 'align': 'right'})
         fmt_pct = workbook.add_format({'num_format': '0.00%', 'align': 'center'})
         fmt_date = workbook.add_format({'num_format': 'dd/mm/yyyy', 'align': 'center'})
         fmt_header = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1})
 
-        # Aplicar formatos a liquidación
+        # B:Mesada, C:%CP, D:CapBruto, E:Fecha, F:Tasa, G:Días, H:IntBruto, I:AbonoInt, J:AbonoCap, K:Saldo
         ws_liq.set_column('B:B', 18, fmt_money)
         ws_liq.set_column('C:C', 10, fmt_pct)
         ws_liq.set_column('D:D', 18, fmt_money)
         ws_liq.set_column('E:E', 15, fmt_date)
         ws_liq.set_column('F:F', 12, fmt_pct)
-        ws_liq.set_column('H:I', 18, fmt_money)
+        ws_liq.set_column('H:K', 18, fmt_money)
         
-        # Aplicar formatos a abonos
         ws_abo.set_column('A:A', 15, fmt_date)
         ws_abo.set_column('B:B', 20, fmt_money)
-        ws_abo.set_column('D:D', 10, fmt_pct)
-        ws_abo.set_column('F:F', 18, fmt_money)
 
     return output.getvalue()
 
 # --- INTERFAZ STREAMLIT ---
 
-st.title("🏦 Liquidador Pro de Cuotas Partes con Abonos")
-st.markdown("Cálculo sincronizado con la metodología **UGPP** que permite aplicar pagos parciales.")
+st.title("🏦 Liquidador Pro - Cuotas Partes con Imputación de Pagos")
+st.markdown("Sincronizado con **UGPP**. Los abonos pagan primero los **intereses pendientes** del periodo más antiguo.")
 
 with st.sidebar:
     st.header("1. Datos Técnicos")
@@ -135,8 +129,7 @@ with st.sidebar:
     porcentaje_cp = st.number_input("% Cuota Parte", value=37.38, step=0.01)
     fecha_corte = st.date_input("Fecha de Corte (Liquidación)", value=date(2026, 4, 30))
 
-# Secciones de entrada
-tabs_input = st.tabs(["💰 Mesadas y Periodos", "💸 Abonos Realizados"])
+tabs_input = st.tabs(["💰 Mesadas y Periodos", "💸 Abonos / Pagos Realizados"])
 
 with tabs_input[0]:
     st.subheader("Configuración de Mesadas")
@@ -163,10 +156,9 @@ with tabs_input[0]:
     mesadas_map = edit_mesadas.set_index("Año")["Mesada_Mensual"].to_dict()
 
 with tabs_input[1]:
-    st.subheader("Registro de Abonos / Pagos")
-    st.info("Ingrese la fecha y el valor de los pagos realizados. El sistema calculará el interés que estos abonos ahorran.")
+    st.subheader("Registro de Abonos")
+    st.info("Los abonos ingresados se aplicarán siguiendo el orden cronológico: primero a intereses vencidos y luego a capital.")
     
-    # Tabla para abonos
     if 'abonos_data' not in st.session_state:
         st.session_state.abonos_data = pd.DataFrame([
             {"Fecha_Abono": date(2024, 1, 15), "Valor_Abono": 0.0}
@@ -182,14 +174,14 @@ with tabs_input[1]:
         use_container_width=True
     )
 
-if st.button("🚀 Ejecutar Liquidación con Abonos", type="primary"):
+if st.button("🚀 Calcular Liquidación e Imputar Pagos", type="primary"):
     tasas_db = {}
     if archivo_excel:
         tasas_db = cargar_tasas_banrep(archivo_excel)
         if tasas_db:
             st.success("✅ Tasas cargadas satisfactoriamente.")
 
-    # 1. Calcular Deuda Bruta (Mesadas)
+    # 1. Calcular Deuda Bruta por Periodo
     resultados_liq = []
     fecha_actual = f_inicio.replace(day=1)
     
@@ -208,94 +200,72 @@ if st.button("🚀 Ejecutar Liquidación con Abonos", type="primary"):
             "Periodo": f"{anio}-{mes:02d}",
             "Mesada Pensional": float(mesada_pensional),
             "% Cuota Parte": float(porcentaje_cp / 100),
-            "Cuota Parte (Capital)": float(cp_principal),
-            "Fecha Inicio Interés": f_causacion,
+            "Cap. Bruto": float(cp_principal),
+            "Fecha Causación": f_causacion,
             "Tasa DTF": float(tasa_usada / 100),
             "Días (n)": int(dias_n),
-            "Intereses": float(interes_v),
-            "Total": float(cp_principal + interes_v)
+            "Int. Bruto": float(interes_v),
+            "Abono a Int.": 0.0,
+            "Abono a Cap.": 0.0,
+            "Saldo Periodo": 0.0
         })
         fecha_actual += relativedelta(months=1)
 
-    df_final_liq = pd.DataFrame(resultados_liq)
+    # 2. Imputación de Pagos (Primero Interés, luego Capital)
+    total_abonos_disponibles = edit_abonos[edit_abonos["Valor_Abono"] > 0]["Valor_Abono"].sum()
+    bolsa_pagos = total_abonos_disponibles
 
-    # 2. Calcular Interés Ahorrado por Abonos
-    resultados_abonos = []
-    total_valor_abonos = 0.0
-    total_interes_ahorrado = 0.0
-
-    for _, row in edit_abonos.iterrows():
-        val = row["Valor_Abono"]
-        f_abono = row["Fecha_Abono"]
+    for res in resultados_liq:
+        # Pago a Interés
+        pago_al_interes = min(res["Int. Bruto"], bolsa_pagos)
+        res["Abono a Int."] = round(pago_al_interes, 2)
+        bolsa_pagos -= pago_al_interes
         
-        if val > 0:
-            # Cálculo de interés que el abono "cancela" desde su fecha hasta el corte
-            n_abono = dias_360(f_abono, fecha_corte)
-            t_abono = tasas_db.get((f_abono.year, f_abono.month), tasa_manual)
-            i_abono = (t_abono / 100)
-            int_ahorrado = round(val * ((1 + i_abono)**(n_abono / 365) - 1), 2)
-            
-            resultados_abonos.append({
-                "Fecha Abono": f_abono,
-                "Valor Abono": float(val),
-                "Días al Corte": n_abono,
-                "Tasa Mes Abono": float(t_abono / 100),
-                "Interés Ahorrado": float(int_ahorrado),
-                "Crédito Total": float(val + int_ahorrado)
-            })
-            total_valor_abonos += val
-            total_interes_ahorrado += int_ahorrado
+        # Pago a Capital
+        pago_al_capital = min(res["Cap. Bruto"], bolsa_pagos)
+        res["Abono a Cap."] = round(pago_al_capital, 2)
+        bolsa_pagos -= pago_al_capital
+        
+        # Saldo Final del Periodo
+        res["Saldo Periodo"] = round((res["Cap. Bruto"] + res["Int. Bruto"]) - (res["Abono a Int."] + res["Abono a Cap."]), 2)
 
-    df_final_abonos = pd.DataFrame(resultados_abonos)
+    df_final = pd.DataFrame(resultados_liq)
 
     # --- SECCIÓN DE RESULTADOS ---
     st.divider()
-    st.subheader("📋 Resumen Consolidado")
+    st.subheader("📋 Resumen de Liquidación Post-Abonos")
     
-    cap_bruto = df_final_liq['Cuota Parte (Capital)'].sum()
-    int_bruto = df_final_liq['Intereses'].sum()
-    
-    saldo_capital = cap_bruto - total_valor_abonos
-    saldo_interes = int_bruto - total_interes_ahorrado
-    gran_total = saldo_capital + saldo_interes
+    cap_bruto_total = df_final['Cap. Bruto'].sum()
+    int_bruto_total = df_final['Int. Bruto'].sum()
+    saldo_final_total = df_final['Saldo Periodo'].sum()
     
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Capital Bruto", f"$ {cap_bruto:,.0f}")
-    c2.metric("Intereses Brutos", f"$ {int_bruto:,.0f}")
-    c3.metric("Total Abonos (Cap+Int)", f"$ {total_valor_abonos + total_interes_ahorrado:,.0f}", delta=f"-{total_valor_abonos:,.0f}", delta_color="inverse")
-    c4.metric("SALDO NETO FINAL", f"$ {gran_total:,.0f}", help="Saldo después de restar capital pagado e intereses ahorrados por el abono.")
+    c1.metric("Deuda Bruta Total", f"$ {cap_bruto_total + int_bruto_total:,.0f}")
+    c2.metric("Total Abonos", f"$ {total_abonos_disponibles:,.0f}", delta=f"-{total_abonos_disponibles:,.0f}", delta_color="inverse")
+    c3.metric("Intereses Pendientes", f"$ {df_final['Int. Bruto'].sum() - df_final['Abono a Int.'].sum():,.0f}")
+    c4.metric("SALDO NETO FINAL", f"$ {saldo_final_total:,.0f}")
 
-    st.write("### Detalle de la Liquidación")
+    st.write("### Detalle Cronológico e Imputación de Pagos")
     st.dataframe(
-        df_final_liq.style.format({
+        df_final.style.format({
             "Mesada Pensional": "${:,.0f}",
             "% Cuota Parte": "{:.2%}",
-            "Cuota Parte (Capital)": "${:,.0f}",
+            "Cap. Bruto": "${:,.0f}",
             "Tasa DTF": "{:.2%}",
-            "Intereses": "${:,.0f}",
-            "Total": "${:,.0f}"
+            "Int. Bruto": "${:,.0f}",
+            "Abono a Int.": "${:,.0f}",
+            "Abono a Cap.": "${:,.0f}",
+            "Saldo Periodo": "${:,.0f}"
         }),
         use_container_width=True
     )
 
-    if not df_final_abonos.empty:
-        st.write("### Detalle de Abonos Aplicados")
-        st.dataframe(
-            df_final_abonos.style.format({
-                "Valor Abono": "${:,.0f}",
-                "Tasa Mes Abono": "{:.2%}",
-                "Interés Ahorrado": "${:,.0f}",
-                "Crédito Total": "${:,.0f}"
-            }),
-            use_container_width=True
-        )
-
     # Botones de Acción
     st.write("---")
-    excel_data = to_excel(df_final_liq, df_final_abonos, pensionado)
+    excel_data = to_excel(df_final, edit_abonos, pensionado)
     st.download_button(
-        label="📥 Descargar Liquidación con Abonos (Excel)",
+        label="📥 Descargar Reporte Completo (Excel)",
         data=excel_data,
-        file_name=f"Liquidacion_Abonos_{pensionado}_{date.today()}.xlsx",
+        file_name=f"Liquidacion_Imputada_{pensionado}_{date.today()}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
