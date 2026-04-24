@@ -5,147 +5,174 @@ from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 import plotly.graph_objects as go
 
-# Configuración
-st.set_page_config(page_title="Liquidador Cuotas Partes", page_icon="📝", layout="wide")
+# Configuración de página
+st.set_page_config(page_title="Liquidador Pasivocol DTF", page_icon="🏦", layout="wide")
 
-def calcular_intereses_compuestos(capital, dtf_anual, dias):
+# --- FUNCIONES DE PROCESAMIENTO DE EXCEL ---
+
+def cargar_tasas_banrep(file):
     """
-    Fórmula según PDF: I = CP * ((1 + DTF)^(n/365) - 1)
-    Donde DTF es la tasa anual expresada en decimal.
+    Procesa el formato específico del Banco de la República:
+    Hoja: 'Series de datos'
+    Columna A: Fecha, Columna B: 1. DTF promedio mensual
     """
-    i_decimal = dtf_anual / 100
-    factor = (1 + i_decimal)**(dias / 365) - 1
-    return capital * factor
+    try:
+        # Leer la hoja específica saltando las filas de metadatos (usualmente las primeras 7)
+        df = pd.read_excel(file, sheet_name="Series de datos", skiprows=2)
+        
+        # Limpiar nombres de columnas (quitar saltos de línea y espacios)
+        df.columns = [str(c).replace('\n', ' ').strip() for c in df.columns]
+        
+        # Identificar columnas clave
+        col_fecha = df.columns[0] # Usualmente 'Fecha'
+        col_dtf = [c for c in df.columns if "1. DTF promedio mensual" in c]
+        
+        if not col_dtf:
+            st.error("No se encontró la columna '1. DTF promedio mensual' en el Excel.")
+            return None
+        
+        col_dtf = col_dtf[0]
+        
+        # Convertir fecha y filtrar nulos
+        df[col_fecha] = pd.to_datetime(df[col_fecha], errors='coerce')
+        df = df.dropna(subset=[col_fecha, col_dtf])
+        
+        # Crear un diccionario {(año, mes): tasa}
+        tasas_map = {}
+        for _, row in df.iterrows():
+            f = row[col_fecha]
+            tasas_map[(f.year, f.month)] = float(row[col_dtf])
+            
+        return tasas_map
+    except Exception as e:
+        st.error(f"Error al procesar el Excel: {e}")
+        return None
+
+def calcular_interes_pasivocol(capital, tasa_anual, fecha_pago_mesada, fecha_corte):
+    """
+    Fórmula: I = CP * ((1 + DTF)^(n/365) - 1)
+    n = días desde el último día del mes siguiente al pago.
+    """
+    # El interés inicia el último día del mes siguiente al pago
+    fecha_inicio_mora = (fecha_pago_mesada + relativedelta(months=1)).replace(day=1) + relativedelta(months=1, days=-1)
+    
+    if fecha_corte <= fecha_inicio_mora:
+        return 0, 0
+    
+    dias = (fecha_corte - fecha_inicio_mora).days
+    i_decimal = tasa_anual / 100
+    interes = capital * ((1 + i_decimal)**(dias / 365) - 1)
+    return interes, dias
 
 # --- INTERFAZ ---
-st.title("📝 Liquidador de Cuotas Partes Vencidas")
-st.info("Basado en la Carta Circular 2-2016-039942 (Metodología Pasivocol / MinHacienda)")
+
+st.title("🏦 Liquidador de Cuotas Partes - Pasivocol")
+st.markdown("Cálculo detallado con **tasas mensuales DTF** y **valores de mesada por año**.")
 
 with st.sidebar:
-    st.header("Configuración General")
-    entidad_emisora = st.text_input("Entidad que Pagó", "Entidad A")
-    entidad_deudora = st.text_input("Entidad Deudora", "Entidad B")
-    pensionado = st.text_input("Nombre del Pensionado", "Juan Pérez")
-    porcentaje_cuota = st.number_input("% Cuota Parte", min_value=0.0, max_value=100.0, value=50.0, step=0.01)
+    st.header("1. Configuración de Tasas")
+    archivo_excel = st.file_uploader("Subir Excel de BanRep (Hoja: 'Series de datos')", type=["xlsx"])
     
     st.divider()
-    st.subheader("Parámetros Financieros")
-    dtf_referencia = st.number_input("DTF Anual Referencia (%)", value=12.0, help="Tasa para el cálculo de intereses")
-    fecha_corte = st.date_input("Fecha de Corte de Liquidación", value=date.today())
+    st.header("2. Datos de Liquidación")
+    pensionado = st.text_input("Pensionado", "Nombre Ejemplo")
+    porcentaje_cp = st.number_input("% Cuota Parte", value=50.0, step=0.1)
+    fecha_corte = st.date_input("Fecha de Corte para intereses", value=date.today())
+    tasa_manual = st.number_input("Tasa de respaldo (%)", value=12.0, help="Se usa si el mes no está en el Excel")
 
-st.subheader("1. Periodo y Valores de Mesada")
-col_f1, col_f2 = st.columns(2)
-with col_f1:
-    fecha_inicio = st.date_input("Fecha Inicio Liquidación", value=date.today() - relativedelta(years=1))
-with col_f2:
-    fecha_fin = st.date_input("Fecha Fin Liquidación", value=date.today())
+# 3. ENTRADA DE SALARIOS POR AÑO
+st.subheader("Configuración de Mesadas por Año")
+col_a1, col_a2 = st.columns(2)
+with col_a1:
+    anio_inicio = st.number_input("Año de inicio", value=2021, step=1)
+with col_a2:
+    anio_fin = st.number_input("Año final", value=date.today().year, step=1)
 
-# Generar lista de meses entre fechas
-def generar_meses(inicio, fin):
-    meses = []
-    actual = inicio.replace(day=1)
-    while actual <= fin:
-        meses.append(actual)
-        actual += relativedelta(months=1)
-    return meses
+anios = list(range(int(anio_inicio), int(anio_fin) + 1))
+df_config_anual = pd.DataFrame({
+    "Año": anios,
+    "Mesada_Mensual_Base": [2500000.0] * len(anios)
+})
 
-lista_meses = generar_meses(fecha_inicio, fecha_fin)
-
-st.markdown("---")
-st.write("### 2. Ingreso de Valores Pagados")
-st.caption("Ingrese el valor total de la mesada pagada en cada periodo. El sistema calculará automáticamente la cuota parte.")
-
-# Tabla editable para valores
-data_inicial = {
-    "Periodo": [m.strftime("%Y-%m") for m in lista_meses],
-    "Mesada_Pagada": [2500000.0] * len(lista_meses)
-}
-df_input = pd.DataFrame(data_inicial)
-
-edited_df = st.data_editor(
-    df_input,
+edit_anual = st.data_editor(
+    df_config_anual,
     column_config={
-        "Periodo": st.column_config.TextColumn("Periodo", disabled=True),
-        "Mesada_Pagada": st.column_config.NumberColumn("Valor Mesada ($)", format="$ %d")
+        "Año": st.column_config.NumberColumn(disabled=True, format="%d"),
+        "Mesada_Mensual_Base": st.column_config.NumberColumn("Valor Mesada ($)", format="$ %d")
     },
-    num_rows="dynamic",
     use_container_width=True
 )
 
-if st.button("🚀 Generar Liquidación Detallada", type="primary"):
-    # Procesamiento de datos
-    resultados = []
-    total_capital = 0
-    total_intereses = 0
+# 4. PROCESAMIENTO
+if st.button("Generar Liquidación Mensualizada", type="primary"):
+    tasas_db = {}
+    if archivo_excel:
+        tasas_db = cargar_tasas_banrep(archivo_excel)
+        if tasas_db:
+            st.success("✅ Tasas mensuales cargadas satisfactoriamente.")
     
-    # Fecha para cálculo de prescripción (3 años atrás desde hoy o fecha de corte)
+    # Construcción de la sábana de liquidación
+    resultados = []
     fecha_limite_prescripcion = fecha_corte - relativedelta(years=3)
-
-    for index, row in edited_df.iterrows():
-        periodo_date = datetime.strptime(row["Periodo"], "%Y-%m").date()
-        # El interés se causa a partir del mes siguiente al pago (último día del mes siguiente)
-        fecha_causacion_interes = periodo_date + relativedelta(months=1)
+    
+    for _, fila in edit_anual.iterrows():
+        anio = int(fila["Año"])
+        mesada_base = fila["Mesada_Mensual_Base"]
         
-        # Días para intereses: Desde el primer día del mes siguiente al pago hasta la fecha de corte
-        if fecha_corte > fecha_causacion_interes:
-            dias_mora = (fecha_corte - fecha_causacion_interes).days
-        else:
-            dias_mora = 0
+        # Generar los 12 meses del año + Mesada adicional (Diciembre)
+        # Nota: Puedes añadir mesada 13 o 14 según el caso
+        meses_a_liquidar = list(range(1, 13)) + [12.1] # 12.1 representa mesada adicional
+        
+        for m in meses_a_liquidar:
+            es_adicional = (m == 12.1)
+            mes_num = 12 if es_adicional else int(m)
             
-        cuota_parte_principal = row["Mesada_Pagada"] * (porcentaje_cuota / 100)
-        interes_calculado = calcular_intereses_compuestos(cuota_parte_principal, dtf_referencia, dias_mora)
-        
-        # Validación de prescripción
-        estado_prescripcion = "Vigente" if periodo_date >= fecha_limite_prescripcion else "⚠️ Posible Prescripción"
-        
-        resultados.append({
-            "Periodo": row["Periodo"],
-            "Mesada Total": row["Mesada_Pagada"],
-            "Cuota Parte (Cap)": cuota_parte_principal,
-            "Días Mora": dias_mora,
-            "Intereses DTF": interes_calculado,
-            "Total Mes": cuota_parte_principal + interes_calculado,
-            "Estado": estado_prescripcion
-        })
-        
-        if estado_prescripcion == "Vigente":
-            total_capital += cuota_parte_principal
-            total_intereses += interes_calculado
+            # Fecha de pago: último día del mes
+            fecha_pago = (date(anio, mes_num, 1) + relativedelta(months=1, days=-1))
+            
+            # Obtener tasa específica del mes/año
+            tasa_aplicable = tasas_db.get((anio, mes_num), tasa_manual) if tasas_db else tasa_manual
+            
+            cp_principal = mesada_base * (porcentaje_cp / 100)
+            interes_v, dias_m = calcular_interes_pasivocol(cp_principal, tasa_aplicable, fecha_pago, fecha_corte)
+            
+            es_prescrita = "🔴 Prescrita" if fecha_pago < fecha_limite_prescripcion else "🟢 Vigente"
+            
+            resultados.append({
+                "Año": anio,
+                "Mes": "Mesada Adicional" if es_adicional else f"Mes {mes_num}",
+                "Fecha Pago": fecha_pago,
+                "Tasa DTF (%)": tasa_aplicable,
+                "Mesada Total": mesada_base,
+                "Cuota Parte (Cap)": cp_principal,
+                "Días Mora": dias_m,
+                "Intereses": interes_v,
+                "Total Periodo": cp_principal + interes_v,
+                "Estado": es_prescrita
+            })
 
-    df_res = pd.DataFrame(resultados)
+    df_final = pd.DataFrame(resultados)
 
-    # --- MÉTRICAS ---
-    st.markdown("### 3. Resumen de Liquidación")
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Total Capital (Vigente)", f"$ {total_capital:,.0f}")
-    m2.metric("Total Intereses", f"$ {total_intereses:,.0f}")
-    m3.metric("GRAN TOTAL", f"$ {total_capital + total_intereses:,.0f}")
+    # --- MÉTRICAS Y TABLA ---
+    st.divider()
+    c1, c2, c3 = st.columns(3)
+    vigentes = df_final[df_final["Estado"] == "🟢 Vigente"]
+    
+    c1.metric("Total Capital Vigente", f"$ {vigentes['Cuota Parte (Cap)'].sum():,.0f}")
+    c2.metric("Total Intereses Vigentes", f"$ {vigentes['Intereses'].sum():,.0f}")
+    c3.metric("GRAN TOTAL COBRO", f"$ {vigentes['Total Periodo'].sum():,.0f}")
 
-    # --- TABLA FINAL ---
     st.dataframe(
-        df_res.style.format({
+        df_final.style.format({
+            "Tasa DTF (%)": "{:.2f}%",
             "Mesada Total": "${:,.0f}",
             "Cuota Parte (Cap)": "${:,.0f}",
-            "Intereses DTF": "${:,.0f}",
-            "Total Mes": "${:,.0f}"
-        }).applymap(lambda x: 'color: red' if x == "⚠️ Posible Prescripción" else '', subset=['Estado']),
+            "Intereses": "${:,.0f}",
+            "Total Periodo": "${:,.0f}"
+        }),
         use_container_width=True
     )
 
-    # Gráfico de composición
-    fig = go.Figure(data=[
-        go.Bar(name='Capital', x=df_res['Periodo'], y=df_res['Cuota Parte (Cap)']),
-        go.Bar(name='Intereses', x=df_res['Periodo'], y=df_res['Intereses DTF'])
-    ])
-    fig.update_layout(barmode='stack', title="Evolución de la Deuda por Periodo")
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Exportar
-    csv = df_res.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        "📥 Descargar Liquidación (CSV)",
-        csv,
-        f"liquidacion_{pensionado}.csv",
-        "text/csv",
-        key='download-csv'
-    )
+    # Descargas
+    csv = df_final.to_csv(index=False).encode('utf-8')
+    st.download_button("📥 Descargar Liquidación Completa", csv, f"liquidacion_{pensionado}.csv", "text/csv")
