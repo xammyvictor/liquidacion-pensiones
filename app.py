@@ -17,10 +17,9 @@ def cargar_tasas_banrep(file):
     Columna B (índice 1): Tasa (DTF)
     """
     try:
-        # Cargamos el Excel sin encabezados fijos para buscar los datos
         df_raw = pd.read_excel(file, sheet_name="Series de datos", header=None)
         
-        # Buscamos la fila donde comienzan los datos reales. 
+        # Búsqueda dinámica de la fila de inicio
         start_row = 0
         for i, val in enumerate(df_raw.iloc[:, 0]):
             try:
@@ -44,6 +43,7 @@ def cargar_tasas_banrep(file):
                 rate = None
             
             if pd.notnull(dt) and rate is not None:
+                # Almacenamos la tasa del mes/año
                 tasas_map[(dt.year, dt.month)] = rate
                 
         return tasas_map
@@ -53,38 +53,40 @@ def cargar_tasas_banrep(file):
 
 def calcular_interes_pasivocol(capital, tasa_anual, anio_mesada, mes_mesada, fecha_corte):
     """
-    Fórmula de Pasivocol: I = CP * ((1 + DTF)^(n/365) - 1)
+    Fórmula de Pasivocol (Interpretación de Interés Simple sobre DTF):
+    I = CP * (DTF / 100) * (n / 365)
+    
     n = Días desde la Fecha de Causación hasta la Fecha de Corte.
     Fecha de Causación = Último día del mes SIGUIENTE a la mesada.
     """
-    # Fecha de la mesada (primer día del mes para el cálculo)
+    # Fecha de referencia de la mesada
     f_base = date(anio_mesada, mes_mesada, 1)
     
-    # Fecha Causación (Último día del mes siguiente):
-    # Sumamos 1 mes y vamos al último día.
+    # Fecha Causación: Último día del mes siguiente (Ej: Mesada Enero -> Causación 28/29 Feb)
+    # n empieza a contar desde el día siguiente a esta fecha.
     f_causacion = (f_base + relativedelta(months=1)) + relativedelta(day=31)
     
     if fecha_corte <= f_causacion:
         return 0, 0, f_causacion
     
-    # Diferencia exacta en días (n)
+    # Cálculo de n (días exactos)
     dias = (fecha_corte - f_causacion).days
     
-    # Cálculo Actuarial/Financiero
-    i_decimal = tasa_anual / 100
-    interes = capital * ((1 + i_decimal)**(dias / 365) - 1)
+    # CAMBIO CRÍTICO: Uso de Interés Simple para coincidir con Pasivocol
+    # I = Capital * Tasa * (Tiempo / 365)
+    interes = capital * (tasa_anual / 100) * (dias / 365)
     
     return interes, dias, f_causacion
 
 # --- INTERFAZ ---
 
 st.title("🏦 Liquidador de Cuotas Partes - Estilo Pasivocol")
-st.markdown("Liquidación técnica utilizando **Columna A (Fecha)** y **Columna B (Tasa)** del archivo Excel.")
+st.markdown("Liquidación técnica ajustada con **Interés Simple** y **Mesadas Dobles** en Junio/Diciembre.")
 
 with st.sidebar:
     st.header("1. Carga de Tasas")
     archivo_excel = st.file_uploader("Subir Excel de BanRep (Hoja: 'Series de datos')", type=["xlsx"])
-    tasa_manual = st.number_input("Tasa de respaldo (%)", value=12.0)
+    tasa_manual = st.number_input("Tasa de respaldo (%)", value=12.0, help="Tasa anual de respaldo.")
 
     st.divider()
     st.header("2. Datos de Liquidación")
@@ -95,7 +97,7 @@ with st.sidebar:
 st.subheader("1. Periodo y Mesadas Anuales")
 col_f1, col_f2 = st.columns(2)
 with col_f1:
-    f_inicio = st.date_input("Fecha Inicio Liquidación", value=date(2022, 1, 1))
+    f_inicio = st.date_input("Fecha Inicio Liquidación", value=date(2020, 1, 1))
 with col_f2:
     f_fin = st.date_input("Fecha Fin Liquidación", value=date(2023, 12, 31))
 
@@ -119,16 +121,15 @@ edit_mesadas = st.data_editor(
 mesadas_map = edit_mesadas.set_index("Año")["Valor_Mesada"].to_dict()
 
 # --- PROCESAMIENTO ---
-if st.button("🚀 Generar Liquidación Detallada", type="primary"):
+if st.button("🚀 Generar Liquidación Pasivocol", type="primary"):
     tasas_db = {}
     if archivo_excel:
         tasas_db = cargar_tasas_banrep(archivo_excel)
         if tasas_db:
-            st.success(f"✅ Datos cargados: {len(tasas_db)} periodos encontrados.")
+            st.success(f"✅ Tasas cargadas correctamente.")
         else:
-            st.warning("⚠️ No se detectaron datos válidos en el Excel. Se usará tasa de respaldo.")
+            st.warning("⚠️ Usando tasa de respaldo.")
 
-    # Generar todos los meses en el rango
     resultados = []
     fecha_actual = f_inicio.replace(day=1)
     
@@ -136,19 +137,19 @@ if st.button("🚀 Generar Liquidación Detallada", type="primary"):
         anio = fecha_actual.year
         mes = fecha_actual.month
         
-        # Valor de la mesada del año respectivo
+        # Valor de la mesada
         mesada_base = mesadas_map.get(anio, 0)
         
-        # REQUERIMIENTO: En Junio y Diciembre la mesada es el doble (Mesada + Prima)
+        # AJUSTE: Mesada doble en Junio (6) y Diciembre (12)
         mesada_pensional = mesada_base * 2 if mes in [6, 12] else mesada_base
         
-        # Tasa DTF del mes/año desde el Excel (Columna B)
+        # Tasa DTF del mes
         tasa_aplicable = tasas_db.get((anio, mes), tasa_manual)
         
         # Cuota Parte Capital
         cp_principal = mesada_pensional * (porcentaje_cp / 100)
         
-        # Cálculo de intereses según metodología Pasivocol (n días desde fin de mes siguiente)
+        # Cálculo de intereses (Simple) y días n
         interes_v, dias_m, f_causacion = calcular_interes_pasivocol(
             cp_principal, 
             tasa_aplicable, 
@@ -180,7 +181,7 @@ if st.button("🚀 Generar Liquidación Detallada", type="primary"):
     c2.metric("Total Intereses", f"$ {df_final['Intereses'].sum():,.0f}")
     c3.metric("GRAN TOTAL", f"$ {df_final['Total'].sum():,.0f}")
 
-    # Estructura Pasivocol
+    # Visualización estilo Pasivocol
     st.dataframe(
         df_final.style.format({
             "Mesada Pensional": "${:,.0f}",
@@ -194,6 +195,6 @@ if st.button("🚀 Generar Liquidación Detallada", type="primary"):
         use_container_width=True
     )
 
-    # Descargas
+    # Descarga
     csv = df_final.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Descargar Liquidación (CSV)", csv, f"liquidacion_{pensionado}.csv", "text/csv")
+    st.download_button("📥 Descargar Reporte (CSV)", csv, f"liquidacion_{pensionado}.csv", "text/csv")
