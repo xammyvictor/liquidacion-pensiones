@@ -21,10 +21,8 @@ def cargar_tasas_banrep(file):
         df_raw = pd.read_excel(file, sheet_name="Series de datos", header=None)
         
         # Buscamos la fila donde comienzan los datos reales. 
-        # Buscamos una celda en la columna A que se pueda convertir a fecha.
         start_row = 0
         for i, val in enumerate(df_raw.iloc[:, 0]):
-            # Intentamos convertir el valor de la columna A a fecha
             try:
                 if pd.notnull(val) and isinstance(pd.to_datetime(val, errors='coerce'), datetime):
                     start_row = i
@@ -32,19 +30,14 @@ def cargar_tasas_banrep(file):
             except:
                 continue
         
-        # Filtramos desde la fila de inicio encontrada
         df_data = df_raw.iloc[start_row:].copy()
         
-        # Usamos columna 0 para fecha y 1 para tasa
         tasas_map = {}
         for _, row in df_data.iterrows():
             f_val = row.iloc[0]
             t_val = row.iloc[1]
-            
-            # Conversión de fecha
             dt = pd.to_datetime(f_val, errors='coerce')
             
-            # Conversión de tasa (manejando puntos o caracteres no numéricos)
             try:
                 rate = float(t_val)
             except (ValueError, TypeError):
@@ -58,21 +51,30 @@ def cargar_tasas_banrep(file):
         st.error(f"Error al procesar el Excel (Columnas A y B): {e}")
         return None
 
-def calcular_interes_pasivocol(capital, tasa_anual, fecha_pago_mesada, fecha_corte):
+def calcular_interes_pasivocol(capital, tasa_anual, anio_mesada, mes_mesada, fecha_corte):
     """
     Fórmula de Pasivocol: I = CP * ((1 + DTF)^(n/365) - 1)
+    n = Días desde la Fecha de Causación hasta la Fecha de Corte.
+    Fecha de Causación = Último día del mes SIGUIENTE a la mesada.
     """
-    # Fecha Causación: último día del mes de pago
-    fecha_causacion = (fecha_pago_mesada + relativedelta(day=31))
+    # Fecha de la mesada (primer día del mes para el cálculo)
+    f_base = date(anio_mesada, mes_mesada, 1)
     
-    # El interés inicia el día siguiente a la causación
-    if fecha_corte <= fecha_causacion:
-        return 0, 0, fecha_causacion
+    # Fecha Causación (Último día del mes siguiente):
+    # Sumamos 1 mes y vamos al último día.
+    f_causacion = (f_base + relativedelta(months=1)) + relativedelta(day=31)
     
-    dias = (fecha_corte - fecha_causacion).days
+    if fecha_corte <= f_causacion:
+        return 0, 0, f_causacion
+    
+    # Diferencia exacta en días (n)
+    dias = (fecha_corte - f_causacion).days
+    
+    # Cálculo Actuarial/Financiero
     i_decimal = tasa_anual / 100
     interes = capital * ((1 + i_decimal)**(dias / 365) - 1)
-    return interes, dias, fecha_causacion
+    
+    return interes, dias, f_causacion
 
 # --- INTERFAZ ---
 
@@ -88,7 +90,7 @@ with st.sidebar:
     st.header("2. Datos de Liquidación")
     pensionado = st.text_input("Nombre del Pensionado", "Juan Pérez")
     porcentaje_cp = st.number_input("% Cuota Parte", value=50.0, step=0.1)
-    fecha_corte = st.date_input("Fecha de Corte", value=date.today())
+    fecha_corte = st.date_input("Fecha de Corte (Finalización)", value=date.today())
 
 st.subheader("1. Periodo y Mesadas Anuales")
 col_f1, col_f2 = st.columns(2)
@@ -122,7 +124,7 @@ if st.button("🚀 Generar Liquidación Detallada", type="primary"):
     if archivo_excel:
         tasas_db = cargar_tasas_banrep(archivo_excel)
         if tasas_db:
-            st.success(f"✅ Datos cargados: {len(tasas_db)} periodos encontrados en Columna A y B.")
+            st.success(f"✅ Datos cargados: {len(tasas_db)} periodos encontrados.")
         else:
             st.warning("⚠️ No se detectaron datos válidos en el Excel. Se usará tasa de respaldo.")
 
@@ -134,38 +136,38 @@ if st.button("🚀 Generar Liquidación Detallada", type="primary"):
         anio = fecha_actual.year
         mes = fecha_actual.month
         
-        mesada_mensual = mesadas_map.get(anio, 0)
-        # Buscar tasa en Excel (Columna B mapeada), si no existe usar manual
+        # Valor de la mesada del año respectivo
+        mesada_base = mesadas_map.get(anio, 0)
+        
+        # REQUERIMIENTO: En Junio y Diciembre la mesada es el doble (Mesada + Prima)
+        mesada_pensional = mesada_base * 2 if mes in [6, 12] else mesada_base
+        
+        # Tasa DTF del mes/año desde el Excel (Columna B)
         tasa_aplicable = tasas_db.get((anio, mes), tasa_manual)
         
-        # Lógica de mesada normal + Prima (Junio y Diciembre)
-        registros_mes = [{"tipo": "Normal", "label": f"{anio}-{mes:02d}"}]
-        if mes == 6:
-            registros_mes.append({"tipo": "Prima", "label": f"{anio}-{mes:02d} (Prima Junio)"})
-        if mes == 12:
-            registros_mes.append({"tipo": "Prima", "label": f"{anio}-{mes:02d} (Prima Diciembre)"})
+        # Cuota Parte Capital
+        cp_principal = mesada_pensional * (porcentaje_cp / 100)
         
-        for reg in registros_mes:
-            # Fecha de pago: último día del mes
-            f_pago = (fecha_actual + relativedelta(months=1, days=-1))
-            
-            # Valor de la mesada y cuota parte
-            cp_principal = mesada_mensual * (porcentaje_cp / 100)
-            
-            # Cálculo intereses y fecha causación
-            interes_v, dias_m, f_causacion = calcular_interes_pasivocol(cp_principal, tasa_aplicable, f_pago, fecha_corte)
-            
-            resultados.append({
-                "Periodo": reg["label"],
-                "Mesada Pensional": mesada_mensual,
-                "% Cuota Parte": porcentaje_cp,
-                "Cuota Parte": cp_principal,
-                "Fecha Causación": f_causacion,
-                "Tasa DTF": tasa_aplicable,
-                "Días": dias_m,
-                "Intereses": interes_v,
-                "Total": cp_principal + interes_v
-            })
+        # Cálculo de intereses según metodología Pasivocol (n días desde fin de mes siguiente)
+        interes_v, dias_m, f_causacion = calcular_interes_pasivocol(
+            cp_principal, 
+            tasa_aplicable, 
+            anio, 
+            mes, 
+            fecha_corte
+        )
+        
+        resultados.append({
+            "Periodo": f"{anio}-{mes:02d}",
+            "Mesada Pensional": mesada_pensional,
+            "% Cuota Parte": porcentaje_cp,
+            "Cuota Parte": cp_principal,
+            "Fecha Causación": f_causacion,
+            "Tasa DTF": tasa_aplicable,
+            "Días": dias_m,
+            "Intereses": interes_v,
+            "Total": cp_principal + interes_v
+        })
             
         fecha_actual += relativedelta(months=1)
 
