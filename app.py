@@ -1,132 +1,151 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+from datetime import datetime, date
+from dateutil.relativedelta import relativedelta
 import plotly.graph_objects as go
-from datetime import datetime
 
-# Configuración de la página
-st.set_page_config(
-    page_title="Calculadora de Pasivos Pensionales",
-    page_icon="⚖️",
-    layout="wide"
-)
+# Configuración
+st.set_page_config(page_title="Liquidador Cuotas Partes", page_icon="📝", layout="wide")
 
-# --- LÓGICA ACTUARIAL ---
-
-def obtener_tabla_mortalidad():
+def calcular_intereses_compuestos(capital, dtf_anual, dias):
     """
-    Simulación de la Tabla de Mortalidad RV08 (Rentistas Válidos 2008).
-    En un entorno real, aquí se cargaría el CSV oficial de la Superfinanciera.
+    Fórmula según PDF: I = CP * ((1 + DTF)^(n/365) - 1)
+    Donde DTF es la tasa anual expresada en decimal.
     """
-    edades = np.arange(0, 111)
-    # Modelo simplificado de Gompertz-Makeham para propósitos ilustrativos
-    # qx = prob. de morir a la edad x
-    qx = 0.0001 + 0.00001 * (1.1 ** edades)
-    qx = np.clip(qx, 0, 1)
-    qx[-1] = 1.0 # Probabilidad 1 a los 110 años
-    return pd.DataFrame({'Edad': edades, 'qx': qx})
+    i_decimal = dtf_anual / 100
+    factor = (1 + i_decimal)**(dias / 365) - 1
+    return capital * factor
 
-def calcular_renta_vitalicia(edad_inicio, sexo, tasa_interes, tablas):
-    """
-    Calcula el Factor de Renta Vitalicia Inmediata (a_x).
-    """
-    i = tasa_interes / 100
-    v = 1 / (1 + i) # Factor de descuento
-    
-    # Filtrar tablas desde la edad de inicio
-    tabla_actual = tablas[tablas['Edad'] >= edad_inicio].copy()
-    tabla_actual['px'] = 1 - tabla_actual['qx']
-    
-    # Supervivencia acumulada (npx)
-    tabla_actual['npx'] = tabla_actual['px'].shift(1, fill_value=1).cumprod()
-    
-    # Valor presente de cada pago
-    tabla_actual['t'] = np.arange(len(tabla_actual))
-    tabla_actual['VP_pago'] = (v ** tabla_actual['t']) * tabla_actual['npx']
-    
-    factor_ax = tabla_actual['VP_pago'].sum()
-    return factor_ax, tabla_actual
-
-# --- INTERFAZ DE USUARIO ---
-
-st.title("⚖️ Liquidación de Pasivos Pensionales")
-st.markdown("""
-Esta herramienta realiza cálculos de reserva actuarial basados en los principios de **Pasivocol**, 
-utilizando tasas técnicas y tablas de mortalidad reguladas en Colombia.
-""")
+# --- INTERFAZ ---
+st.title("📝 Liquidador de Cuotas Partes Vencidas")
+st.info("Basado en la Carta Circular 2-2016-039942 (Metodología Pasivocol / MinHacienda)")
 
 with st.sidebar:
-    st.header("Parámetros de Cálculo")
-    
-    nombre = st.text_input("Nombre del Causante", "Juan Pérez")
-    fecha_nacimiento = st.date_input("Fecha de Nacimiento", value=datetime(1965, 5, 20))
-    sexo = st.selectbox("Sexo", ["Masculino", "Femenino"])
+    st.header("Configuración General")
+    entidad_emisora = st.text_input("Entidad que Pagó", "Entidad A")
+    entidad_deudora = st.text_input("Entidad Deudora", "Entidad B")
+    pensionado = st.text_input("Nombre del Pensionado", "Juan Pérez")
+    porcentaje_cuota = st.number_input("% Cuota Parte", min_value=0.0, max_value=100.0, value=50.0, step=0.01)
     
     st.divider()
-    
-    ibl = st.number_input("Ingreso Base de Liquidación (IBL) $", min_value=1300000, value=2500000, step=100000)
-    tasa_tecnica = st.selectbox("Tasa Técnica Anual (%)", [4.0, 4.8], index=0, help="4.0% es la estándar para reservas según la normativa.")
-    
-    tipo_tabla = st.selectbox("Tabla de Mortalidad", ["RV08 (Rentistas Válidos)", "ISS 2008 (Experiencia General)"])
-    
-    calcular = st.button("Calcular Liquidación", type="primary")
+    st.subheader("Parámetros Financieros")
+    dtf_referencia = st.number_input("DTF Anual Referencia (%)", value=12.0, help="Tasa para el cálculo de intereses")
+    fecha_corte = st.date_input("Fecha de Corte de Liquidación", value=date.today())
 
-# Cálculo de edad actual
-hoy = datetime.now()
-edad_actual = hoy.year - fecha_nacimiento.year - ((hoy.month, hoy.day) < (fecha_nacimiento.month, fecha_nacimiento.day))
+st.subheader("1. Periodo y Valores de Mesada")
+col_f1, col_f2 = st.columns(2)
+with col_f1:
+    fecha_inicio = st.date_input("Fecha Inicio Liquidación", value=date.today() - relativedelta(years=1))
+with col_f2:
+    fecha_fin = st.date_input("Fecha Fin Liquidación", value=date.today())
 
-if calcular:
-    tablas = obtener_tabla_mortalidad()
-    factor, detalle_tabla = calcular_renta_vitalicia(edad_actual, sexo, tasa_tecnica, tablas)
-    
-    reserva_total = factor * ibl * 13 # Se incluyen 13 mesadas anuales por ley en Colombia
-    
-    # --- RESULTADOS PRINCIPALES ---
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("Edad del Sujeto", f"{edad_actual} años")
-    with col2:
-        st.metric("Factor Actuarial (ax)", f"{factor:.4f}")
-    with col3:
-        st.metric("Reserva Total Estimada", f"${reserva_total:,.0f}")
+# Generar lista de meses entre fechas
+def generar_meses(inicio, fin):
+    meses = []
+    actual = inicio.replace(day=1)
+    while actual <= fin:
+        meses.append(actual)
+        actual += relativedelta(months=1)
+    return meses
 
-    # --- GRÁFICOS ---
-    st.subheader("Análisis de Supervivencia y Descuento")
+lista_meses = generar_meses(fecha_inicio, fecha_fin)
+
+st.markdown("---")
+st.write("### 2. Ingreso de Valores Pagados")
+st.caption("Ingrese el valor total de la mesada pagada en cada periodo. El sistema calculará automáticamente la cuota parte.")
+
+# Tabla editable para valores
+data_inicial = {
+    "Periodo": [m.strftime("%Y-%m") for m in lista_meses],
+    "Mesada_Pagada": [2500000.0] * len(lista_meses)
+}
+df_input = pd.DataFrame(data_inicial)
+
+edited_df = st.data_editor(
+    df_input,
+    column_config={
+        "Periodo": st.column_config.TextColumn("Periodo", disabled=True),
+        "Mesada_Pagada": st.column_config.NumberColumn("Valor Mesada ($)", format="$ %d")
+    },
+    num_rows="dynamic",
+    use_container_width=True
+)
+
+if st.button("🚀 Generar Liquidación Detallada", type="primary"):
+    # Procesamiento de datos
+    resultados = []
+    total_capital = 0
+    total_intereses = 0
     
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=detalle_tabla['Edad'], y=detalle_tabla['npx'], name="Prob. Supervivencia (npx)", fill='tozeroy'))
-    fig.add_trace(go.Scatter(x=detalle_tabla['Edad'], y=detalle_tabla['VP_pago'], name="Valor Presente de Pagos", line=dict(dash='dash')))
-    
-    fig.update_layout(
-        title="Curva de Probabilidad y Descuento Financiero",
-        xaxis_title="Edad",
-        yaxis_title="Probabilidad / Valor Relativo",
-        hovermode="x unified"
+    # Fecha para cálculo de prescripción (3 años atrás desde hoy o fecha de corte)
+    fecha_limite_prescripcion = fecha_corte - relativedelta(years=3)
+
+    for index, row in edited_df.iterrows():
+        periodo_date = datetime.strptime(row["Periodo"], "%Y-%m").date()
+        # El interés se causa a partir del mes siguiente al pago (último día del mes siguiente)
+        fecha_causacion_interes = periodo_date + relativedelta(months=1)
+        
+        # Días para intereses: Desde el primer día del mes siguiente al pago hasta la fecha de corte
+        if fecha_corte > fecha_causacion_interes:
+            dias_mora = (fecha_corte - fecha_causacion_interes).days
+        else:
+            dias_mora = 0
+            
+        cuota_parte_principal = row["Mesada_Pagada"] * (porcentaje_cuota / 100)
+        interes_calculado = calcular_intereses_compuestos(cuota_parte_principal, dtf_referencia, dias_mora)
+        
+        # Validación de prescripción
+        estado_prescripcion = "Vigente" if periodo_date >= fecha_limite_prescripcion else "⚠️ Posible Prescripción"
+        
+        resultados.append({
+            "Periodo": row["Periodo"],
+            "Mesada Total": row["Mesada_Pagada"],
+            "Cuota Parte (Cap)": cuota_parte_principal,
+            "Días Mora": dias_mora,
+            "Intereses DTF": interes_calculado,
+            "Total Mes": cuota_parte_principal + interes_calculado,
+            "Estado": estado_prescripcion
+        })
+        
+        if estado_prescripcion == "Vigente":
+            total_capital += cuota_parte_principal
+            total_intereses += interes_calculado
+
+    df_res = pd.DataFrame(resultados)
+
+    # --- MÉTRICAS ---
+    st.markdown("### 3. Resumen de Liquidación")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Total Capital (Vigente)", f"$ {total_capital:,.0f}")
+    m2.metric("Total Intereses", f"$ {total_intereses:,.0f}")
+    m3.metric("GRAN TOTAL", f"$ {total_capital + total_intereses:,.0f}")
+
+    # --- TABLA FINAL ---
+    st.dataframe(
+        df_res.style.format({
+            "Mesada Total": "${:,.0f}",
+            "Cuota Parte (Cap)": "${:,.0f}",
+            "Intereses DTF": "${:,.0f}",
+            "Total Mes": "${:,.0f}"
+        }).applymap(lambda x: 'color: red' if x == "⚠️ Posible Prescripción" else '', subset=['Estado']),
+        use_container_width=True
     )
+
+    # Gráfico de composición
+    fig = go.Figure(data=[
+        go.Bar(name='Capital', x=df_res['Periodo'], y=df_res['Cuota Parte (Cap)']),
+        go.Bar(name='Intereses', x=df_res['Periodo'], y=df_res['Intereses DTF'])
+    ])
+    fig.update_layout(barmode='stack', title="Evolución de la Deuda por Periodo")
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- TABLA DE DETALLE ---
-    with st.expander("Ver detalle de flujos actuariales"):
-        st.dataframe(
-            detalle_tabla[['Edad', 'qx', 'npx', 'VP_pago']].style.format({
-                'qx': '{:.6f}',
-                'npx': '{:.4f}',
-                'VP_pago': '{:.4f}'
-            }),
-            use_container_width=True
-        )
-
-    # Botón de descarga
-    csv = detalle_tabla.to_csv(index=False).encode('utf-8')
+    # Exportar
+    csv = df_res.to_csv(index=False).encode('utf-8')
     st.download_button(
-        label="Descargar Reporte en CSV",
-        data=csv,
-        file_name=f"liquidacion_{nombre}_{datetime.now().strftime('%Y%m%d')}.csv",
-        mime='text/csv',
+        "📥 Descargar Liquidación (CSV)",
+        csv,
+        f"liquidacion_{pensionado}.csv",
+        "text/csv",
+        key='download-csv'
     )
-else:
-    st.info("Configure los parámetros en la barra lateral y haga clic en 'Calcular Liquidación' para ver los resultados.")
-
-st.divider()
-st.caption("Aviso legal: Este aplicativo es una herramienta educativa y de referencia. Los cálculos oficiales deben ser validados por un actuario certificado.")
