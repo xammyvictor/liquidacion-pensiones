@@ -4,6 +4,7 @@ import numpy as np
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 import plotly.graph_objects as go
+import io
 
 # Configuración de página
 st.set_page_config(page_title="Liquidador Pasivocol DTF", page_icon="🏦", layout="wide")
@@ -84,6 +85,32 @@ def calcular_interes_pasivocol_preciso(capital, anio_mesada, mes_mesada, fecha_c
     interes = capital * ((1 + i_decimal)**(n / 365) - 1)
     
     return interes, n, f_inicio_interes, tasa_aplicable
+
+def to_excel(df):
+    """
+    Convierte el dataframe a un archivo Excel en memoria para descarga.
+    """
+    output = io.BytesIO()
+    # Usamos xlsxwriter para mejor compatibilidad con formatos
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='Liquidación')
+        workbook = writer.book
+        worksheet = writer.sheets['Liquidación']
+        
+        # Definir formatos numéricos
+        format_money = workbook.add_format({'num_format': '"$"#,##0'})
+        format_pct = workbook.add_format({'num_format': '0.00"%"'})
+        
+        # Aplicar formatos a las columnas (ajustar índices según el DF)
+        # 0:Periodo, 1:Mesada, 2:%CP, 3:CP, 4:Fecha, 5:Tasa, 6:Días, 7:Intereses, 8:Total
+        worksheet.set_column('B:B', 15, format_money) # Mesada
+        worksheet.set_column('C:C', 12, format_pct)   # % Cuota Parte
+        worksheet.set_column('D:D', 15, format_money) # Cuota Parte
+        worksheet.set_column('F:F', 12, format_pct)   # Tasa DTF
+        worksheet.set_column('H:I', 15, format_money) # Intereses y Total
+        
+    processed_data = output.getvalue()
+    return processed_data
 
 # --- INTERFAZ DE USUARIO ---
 
@@ -187,7 +214,7 @@ if st.button("🚀 Ejecutar Liquidación Pasivocol", type="primary"):
     c2.metric("Intereses Totales", f"$ {total_int:,.0f}")
     c3.metric("GRAN TOTAL", f"$ {total_cap + total_int:,.0f}")
 
-    # Tabla Estilo Pasivocol
+    # Tabla Estilo Pasivocol en Streamlit (solo visual)
     st.dataframe(
         df_final.style.format({
             "Mesada Pensional": "${:,.0f}",
@@ -201,6 +228,12 @@ if st.button("🚀 Ejecutar Liquidación Pasivocol", type="primary"):
         use_container_width=True
     )
 
-    # Exportación
-    csv = df_final.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Descargar Liquidación (CSV)", csv, f"liquidacion_{pensionado}.csv", "text/csv")
+    # Exportación a EXCEL (con datos numéricos)
+    excel_data = to_excel(df_final)
+    st.download_button(
+        label="📥 Descargar Liquidación (Excel)",
+        data=excel_data,
+        file_name=f"liquidacion_{pensionado}_{date.today()}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key='download-excel'
+    )
