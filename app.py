@@ -17,14 +17,10 @@ def cargar_tasas_banrep(file):
     Columna A: Fecha, Columna B: 1. DTF promedio mensual
     """
     try:
-        # Leer la hoja específica saltando las filas de metadatos (usualmente las primeras 7)
         df = pd.read_excel(file, sheet_name="Series de datos", skiprows=2)
-        
-        # Limpiar nombres de columnas (quitar saltos de línea y espacios)
         df.columns = [str(c).replace('\n', ' ').strip() for c in df.columns]
         
-        # Identificar columnas clave
-        col_fecha = df.columns[0] # Usualmente 'Fecha'
+        col_fecha = df.columns[0] 
         col_dtf = [c for c in df.columns if "1. DTF promedio mensual" in c]
         
         if not col_dtf:
@@ -32,12 +28,9 @@ def cargar_tasas_banrep(file):
             return None
         
         col_dtf = col_dtf[0]
-        
-        # Convertir fecha y filtrar nulos
         df[col_fecha] = pd.to_datetime(df[col_fecha], errors='coerce')
         df = df.dropna(subset=[col_fecha, col_dtf])
         
-        # Crear un diccionario {(año, mes): tasa}
         tasas_map = {}
         for _, row in df.iterrows():
             f = row[col_fecha]
@@ -51,128 +44,144 @@ def cargar_tasas_banrep(file):
 def calcular_interes_pasivocol(capital, tasa_anual, fecha_pago_mesada, fecha_corte):
     """
     Fórmula: I = CP * ((1 + DTF)^(n/365) - 1)
-    n = días desde el último día del mes siguiente al pago.
+    n = días desde el último día del mes siguiente al pago (Fecha Causación).
     """
-    # El interés inicia el último día del mes siguiente al pago
-    fecha_inicio_mora = (fecha_pago_mesada + relativedelta(months=1)).replace(day=1) + relativedelta(months=1, days=-1)
+    # Fecha Causación: último día del mes siguiente al pago
+    fecha_causacion = (fecha_pago_mesada + relativedelta(months=1)).replace(day=1) + relativedelta(months=1, days=-1)
     
-    if fecha_corte <= fecha_inicio_mora:
-        return 0, 0
+    if fecha_corte <= fecha_causacion:
+        return 0, 0, fecha_causacion
     
-    dias = (fecha_corte - fecha_inicio_mora).days
+    dias = (fecha_corte - fecha_causacion).days
     i_decimal = tasa_anual / 100
     interes = capital * ((1 + i_decimal)**(dias / 365) - 1)
-    return interes, dias
+    return interes, dias, fecha_causacion
 
 # --- INTERFAZ ---
 
-st.title("🏦 Liquidador de Cuotas Partes - Pasivocol")
-st.markdown("Cálculo detallado con **tasas mensuales DTF** y **valores de mesada por año**.")
+st.title("🏦 Liquidador de Cuotas Partes - Estilo Pasivocol")
+st.markdown("Liquidación técnica con **DTF mensual**, selección de **fechas exactas** y **mesadas anualizadas**.")
 
 with st.sidebar:
     st.header("1. Configuración de Tasas")
     archivo_excel = st.file_uploader("Subir Excel de BanRep (Hoja: 'Series de datos')", type=["xlsx"])
-    
+    tasa_manual = st.number_input("Tasa de respaldo (%)", value=12.0)
+
     st.divider()
-    st.header("2. Datos de Liquidación")
-    pensionado = st.text_input("Pensionado", "Nombre Ejemplo")
+    st.header("2. Datos Generales")
+    pensionado = st.text_input("Nombre del Pensionado", "Juan Pérez")
     porcentaje_cp = st.number_input("% Cuota Parte", value=50.0, step=0.1)
-    fecha_corte = st.date_input("Fecha de Corte para intereses", value=date.today())
-    tasa_manual = st.number_input("Tasa de respaldo (%)", value=12.0, help="Se usa si el mes no está en el Excel")
+    fecha_corte = st.date_input("Fecha de Corte (Liquidación hasta)", value=date.today())
 
-# 3. ENTRADA DE SALARIOS POR AÑO
-st.subheader("Configuración de Mesadas por Año")
-col_a1, col_a2 = st.columns(2)
-with col_a1:
-    anio_inicio = st.number_input("Año de inicio", value=2021, step=1)
-with col_a2:
-    anio_fin = st.number_input("Año final", value=date.today().year, step=1)
+st.subheader("1. Selección del Periodo de Liquidación")
+col_f1, col_f2 = st.columns(2)
+with col_f1:
+    f_inicio = st.date_input("Fecha de Inicio Liquidación", value=date(2022, 1, 1))
+with col_f2:
+    f_fin = st.date_input("Fecha de Fin Liquidación", value=date(2023, 12, 31))
 
-anios = list(range(int(anio_inicio), int(anio_fin) + 1))
-df_config_anual = pd.DataFrame({
-    "Año": anios,
-    "Mesada_Mensual_Base": [2500000.0] * len(anios)
+# --- ENTRADA DE MESADAS POR AÑO ---
+st.subheader("2. Valor de Mesada por Año")
+st.info("Ingrese el valor de la mesada de cada año. El sistema la aplicará automáticamente a todos los meses correspondientes.")
+
+años_rango = list(range(f_inicio.year, f_fin.year + 1))
+df_mesadas_anuales = pd.DataFrame({
+    "Año": años_rango,
+    "Valor_Mesada": [2000000.0] * len(años_rango)
 })
 
-edit_anual = st.data_editor(
-    df_config_anual,
+edit_mesadas = st.data_editor(
+    df_mesadas_anuales,
     column_config={
         "Año": st.column_config.NumberColumn(disabled=True, format="%d"),
-        "Mesada_Mensual_Base": st.column_config.NumberColumn("Valor Mesada ($)", format="$ %d")
+        "Valor_Mesada": st.column_config.NumberColumn("Mesada Mensual ($)", format="$ %d")
     },
-    use_container_width=True
+    use_container_width=True,
+    key="mesadas_editor"
 )
 
-# 4. PROCESAMIENTO
-if st.button("Generar Liquidación Mensualizada", type="primary"):
+# Convertir el editor en un diccionario para fácil acceso
+mesadas_map = edit_mesadas.set_index("Año")["Valor_Mesada"].to_dict()
+
+# --- PROCESAMIENTO ---
+if st.button("🚀 Generar Liquidación Pasivocol", type="primary"):
     tasas_db = {}
     if archivo_excel:
         tasas_db = cargar_tasas_banrep(archivo_excel)
         if tasas_db:
-            st.success("✅ Tasas mensuales cargadas satisfactoriamente.")
-    
-    # Construcción de la sábana de liquidación
+            st.success("✅ Tasas cargadas satisfactoriamente.")
+
+    # Generar todos los meses en el rango
     resultados = []
-    fecha_limite_prescripcion = fecha_corte - relativedelta(years=3)
+    fecha_actual = f_inicio.replace(day=1)
     
-    for _, fila in edit_anual.iterrows():
-        anio = int(fila["Año"])
-        mesada_base = fila["Mesada_Mensual_Base"]
+    while fecha_actual <= f_fin:
+        # Solo procesar si el mes está dentro del rango solicitado
+        anio = fecha_actual.year
+        mes = fecha_actual.month
         
-        # Generar los 12 meses del año + Mesada adicional (Diciembre)
-        # Nota: Puedes añadir mesada 13 o 14 según el caso
-        meses_a_liquidar = list(range(1, 13)) + [12.1] # 12.1 representa mesada adicional
+        mesada_mensual = mesadas_map.get(anio, 0)
+        tasa_aplicable = tasas_db.get((anio, mes), tasa_manual) if tasas_db else tasa_manual
         
-        for m in meses_a_liquidar:
-            es_adicional = (m == 12.1)
-            mes_num = 12 if es_adicional else int(m)
-            
+        # Iterar para mesada normal y mesadas adicionales (Junio y Diciembre)
+        tipos_mesada = ["Normal"]
+        if mes == 6: tipos_mesada.append("Prima Junio")
+        if mes == 12: tipos_mesada.append("Prima Diciembre")
+        
+        for tipo in tipos_mesada:
             # Fecha de pago: último día del mes
-            fecha_pago = (date(anio, mes_num, 1) + relativedelta(months=1, days=-1))
+            f_pago = (fecha_actual + relativedelta(months=1, days=-1))
             
-            # Obtener tasa específica del mes/año
-            tasa_aplicable = tasas_db.get((anio, mes_num), tasa_manual) if tasas_db else tasa_manual
+            # Cálculo capital
+            cp_principal = mesada_mensual * (porcentaje_cp / 100)
             
-            cp_principal = mesada_base * (porcentaje_cp / 100)
-            interes_v, dias_m = calcular_interes_pasivocol(cp_principal, tasa_aplicable, fecha_pago, fecha_corte)
-            
-            es_prescrita = "🔴 Prescrita" if fecha_pago < fecha_limite_prescripcion else "🟢 Vigente"
+            # Cálculo intereses y fecha causación
+            interes_v, dias_m, f_causacion = calcular_interes_pasivocol(cp_principal, tasa_aplicable, f_pago, fecha_corte)
             
             resultados.append({
-                "Año": anio,
-                "Mes": "Mesada Adicional" if es_adicional else f"Mes {mes_num}",
-                "Fecha Pago": fecha_pago,
-                "Tasa DTF (%)": tasa_aplicable,
-                "Mesada Total": mesada_base,
-                "Cuota Parte (Cap)": cp_principal,
-                "Días Mora": dias_m,
+                "Periodo": f"{anio}-{mes:02d}" + (" (Add)" if tipo != "Normal" else ""),
+                "Mesada Pensional": mesada_mensual,
+                "% Cuota Parte": porcentaje_cp,
+                "Cuota Parte": cp_principal,
+                "Fecha Causación": f_causacion,
+                "Tasa DTF": tasa_aplicable,
+                "Días": dias_m,
                 "Intereses": interes_v,
-                "Total Periodo": cp_principal + interes_v,
-                "Estado": es_prescrita
+                "Total": cp_principal + interes_v
             })
+            
+        fecha_actual += relativedelta(months=1)
 
     df_final = pd.DataFrame(resultados)
 
-    # --- MÉTRICAS Y TABLA ---
+    # --- RESULTADOS ---
     st.divider()
     c1, c2, c3 = st.columns(3)
-    vigentes = df_final[df_final["Estado"] == "🟢 Vigente"]
-    
-    c1.metric("Total Capital Vigente", f"$ {vigentes['Cuota Parte (Cap)'].sum():,.0f}")
-    c2.metric("Total Intereses Vigentes", f"$ {vigentes['Intereses'].sum():,.0f}")
-    c3.metric("GRAN TOTAL COBRO", f"$ {vigentes['Total Periodo'].sum():,.0f}")
+    c1.metric("Total Cuota Parte (Cap)", f"$ {df_final['Cuota Parte'].sum():,.0f}")
+    c2.metric("Total Intereses", f"$ {df_final['Intereses'].sum():,.0f}")
+    c3.metric("GRAN TOTAL", f"$ {df_final['Total'].sum():,.0f}")
 
+    # Estructura visual Pasivocol
+    st.write("### Estructura de Liquidación (Pasivocol)")
     st.dataframe(
         df_final.style.format({
-            "Tasa DTF (%)": "{:.2f}%",
-            "Mesada Total": "${:,.0f}",
-            "Cuota Parte (Cap)": "${:,.0f}",
+            "Mesada Pensional": "${:,.0f}",
+            "% Cuota Parte": "{:.2f}%",
+            "Cuota Parte": "${:,.0f}",
+            "Tasa DTF": "{:.2f}%",
+            "Días": "{:d}",
             "Intereses": "${:,.0f}",
-            "Total Periodo": "${:,.0f}"
+            "Total": "${:,.0f}"
         }),
         use_container_width=True
     )
 
     # Descargas
     csv = df_final.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Descargar Liquidación Completa", csv, f"liquidacion_{pensionado}.csv", "text/csv")
+    st.download_button("📥 Descargar Reporte Pasivocol", csv, f"liquidacion_{pensionado}.csv", "text/csv")
+
+    # Gráfico
+    resumen_periodos = df_final.groupby("Periodo")["Total"].sum().reset_index()
+    fig = go.Figure(go.Scatter(x=resumen_periodos['Periodo'], y=resumen_periodos['Total'], mode='lines+markers', name='Total Deuda'))
+    fig.update_layout(title="Evolución de la Deuda por Periodo", xaxis_title="Periodo", yaxis_title="Total ($)")
+    st.plotly_chart(fig, use_container_width=True)
