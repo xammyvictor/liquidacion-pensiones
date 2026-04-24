@@ -193,24 +193,43 @@ if st.button("🚀 Ejecutar Liquidación", type="primary"):
 
     df_final = pd.DataFrame(resultados)
 
+    # --- SECCIÓN DE RESULTADOS Y TOTALES ---
     st.divider()
-    st.write("### Vista Previa de Resultados")
+    st.subheader("📋 Resumen de Liquidación")
+    
+    # Cálculo de totales
+    total_capital = df_final['Cuota Parte (Capital)'].sum()
+    total_intereses = df_final['Intereses'].sum()
+    gran_total = total_capital + total_intereses
+    
+    # Mostrar métricas destacadas
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Valor Cuotaparte", f"$ {total_capital:,.2f}")
+    c2.metric("Total Intereses", f"$ {total_intereses:,.2f}")
+    c3.metric("GRAN TOTAL A COBRAR", f"$ {gran_total:,.2f}")
+
+    st.write("### Vista Previa de Resultados Detallados")
     st.dataframe(
         df_final.style.format({
             "Mesada Pensional": "${:,.0f}",
             "% Cuota Parte": "{:.2%}",
-            "Cuota Parte (Capital)": "${:,.0f}",
+            "Cuota Parte (Capital)": "${:,.2f}",
             "Tasa DTF": "{:.2%}",
-            "Intereses": "${:,.0f}",
-            "Total": "${:,.0f}"
+            "Intereses": "${:,.2f}",
+            "Total": "${:,.2f}"
         }),
         use_container_width=True
     )
 
-    excel_data = to_excel(df_final, pensionado)
-    st.download_button(
-        label="📥 Descargar Reporte Profesional (Excel)",
-        data=excel_data,
-        file_name=f"Liquidacion_{pensionado}_{date.today()}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    # Botones de Acción
+    st.write("---")
+    col_down1, col_down2 = st.columns([1, 4])
+    with col_down1:
+        excel_data = to_excel(df_final, pensionado)
+        st.download_button(
+            label="📥 Descargar Reporte (Excel)",
+            data=excel_data,
+            file_name=f"Liquidacion_{pensionado}_{date.today()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="secondary"
+        )
