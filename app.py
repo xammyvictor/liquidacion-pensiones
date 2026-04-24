@@ -54,16 +54,18 @@ def cargar_tasas_banrep(file):
 
 def calcular_interes_pasivocol_preciso(capital, anio_mesada, mes_mesada, fecha_corte, tasas_db, tasa_manual):
     """
-    Metodología Pasivocol:
-    1. Fecha de Causación = Último día del mes SIGUIENTE a la mesada.
-    2. n = Días desde la fecha de causación hasta la fecha de corte.
-    3. Interés = CP * ((1 + i)^(n/365) - 1)
+    Metodología Pasivocol Actualizada:
+    1. Fecha de Pago = Periodo de la mesada.
+    2. Tasa (i) = Se toma la vigente en la fecha de pago de la mesada (según image_86f2b9.png).
+    3. Fecha de Causación = Último día del mes SIGUIENTE a la mesada.
+    4. n = Días desde la fecha de causación hasta la fecha de corte.
+    5. Interés = CP * ((1 + i)^(n/365) - 1)
     """
-    # Mesada base (primer día del mes para referencia)
+    # Mesada base
     f_base = date(anio_mesada, mes_mesada, 1)
     
     # Fecha Causación (Último día del mes siguiente):
-    # Por ejemplo, para mesada de Enero, la causación es el último día de Febrero.
+    # n empieza a contar desde el día siguiente a esta fecha.
     f_causacion = (f_base + relativedelta(months=1)) + relativedelta(day=31)
     
     if fecha_corte <= f_causacion:
@@ -72,10 +74,10 @@ def calcular_interes_pasivocol_preciso(capital, anio_mesada, mes_mesada, fecha_c
     # Días n (Diferencia exacta)
     dias = (fecha_corte - f_causacion).days
     
-    # Tasa del mes de CAUSACIÓN (según observación en image_870258.png)
-    tasa_aplicable = tasas_db.get((f_causacion.year, f_causacion.month), tasa_manual)
+    # AJUSTE: La tasa i se toma del mes de la MESADA (Fecha de pago), no de la causación.
+    tasa_aplicable = tasas_db.get((anio_mesada, mes_mesada), tasa_manual)
     
-    # Fórmula Compound según imagen image_8701be.png: I = CP * ((1 + i)^(n/365) - 1)
+    # Fórmula de Interés Compuesto
     i_decimal = tasa_aplicable / 100
     interes = capital * ((1 + i_decimal)**(dias / 365) - 1)
     
@@ -84,12 +86,12 @@ def calcular_interes_pasivocol_preciso(capital, anio_mesada, mes_mesada, fecha_c
 # --- INTERFAZ ---
 
 st.title("🏦 Liquidador de Cuotas Partes - Estilo Pasivocol")
-st.markdown("Liquidación técnica ajustada con la **Fórmula de Interés Compuesto** y **Causación al Mes Siguiente**.")
+st.markdown("Liquidación técnica ajustada con la **Tasa vigente a la fecha de pago** y **Causación al Mes Siguiente**.")
 
 with st.sidebar:
     st.header("1. Carga de Tasas")
     archivo_excel = st.file_uploader("Subir Excel de BanRep (Hoja: 'Series de datos')", type=["xlsx"])
-    tasa_manual = st.number_input("Tasa de respaldo (%)", value=5.0, help="Se recomienda usar la tasa real histórica (ej. 4% o 5%) si no sube el Excel.")
+    tasa_manual = st.number_input("Tasa de respaldo (%)", value=5.0, help="Se usa si el mes no está en el archivo Excel.")
 
     st.divider()
     st.header("2. Datos de Liquidación")
