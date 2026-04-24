@@ -12,70 +12,61 @@ st.set_page_config(page_title="Liquidador Pasivocol DTF", page_icon="🏦", layo
 
 def cargar_tasas_banrep(file):
     """
-    Procesa el formato específico del Banco de la República:
-    Hoja: 'Series de datos'
-    Columna A: Fecha, Columna B: 1. DTF promedio mensual
+    Procesa el archivo de tasas basándose estrictamente en la ubicación:
+    Columna A (índice 0): Periodo/Fecha
+    Columna B (índice 1): Tasa (DTF)
     """
     try:
-        # Leemos el archivo buscando la hoja correcta
-        # Nota: Ajustamos para encontrar el encabezado dinámicamente
-        df_raw = pd.read_excel(file, sheet_name="Series de datos")
+        # Cargamos el Excel sin encabezados fijos para buscar los datos
+        df_raw = pd.read_excel(file, sheet_name="Series de datos", header=None)
         
-        # Encontrar la fila donde empieza 'Fecha' en la columna A
-        header_row = 0
-        for i, row in df_raw.iterrows():
-            if str(row.iloc[0]).strip().lower() == "fecha":
-                header_row = i
-                break
+        # Buscamos la fila donde comienzan los datos reales. 
+        # Buscamos una celda en la columna A que se pueda convertir a fecha.
+        start_row = 0
+        for i, val in enumerate(df_raw.iloc[:, 0]):
+            # Intentamos convertir el valor de la columna A a fecha
+            try:
+                if pd.notnull(val) and isinstance(pd.to_datetime(val, errors='coerce'), datetime):
+                    start_row = i
+                    break
+            except:
+                continue
         
-        # Volver a leer con el encabezado correcto
-        df = pd.read_excel(file, sheet_name="Series de datos", skiprows=header_row + 1)
-        # La lectura de arriba deja los nombres de columnas en la fila header_row+1. 
-        # Intentemos una limpieza más directa de las columnas del dataframe original:
-        df = df_raw.iloc[header_row+1:].copy()
-        df.columns = df_raw.iloc[header_row] # Asignar la fila 'Fecha', '1. DTF...' como nombres de columna
+        # Filtramos desde la fila de inicio encontrada
+        df_data = df_raw.iloc[start_row:].copy()
         
-        # Limpiar nombres de columnas
-        df.columns = [str(c).replace('\n', ' ').strip() for c in df.columns]
-        
-        col_fecha = df.columns[0] 
-        col_dtf = [c for c in df.columns if "1. DTF promedio mensual" in c]
-        
-        if not col_dtf:
-            st.error("No se encontró la columna '1. DTF promedio mensual'. Verifique el formato del Excel.")
-            return None
-        
-        col_dtf = col_dtf[0]
-        
-        # Convertir fecha y limpiar
-        df[col_fecha] = pd.to_datetime(df[col_fecha], errors='coerce')
-        df = df.dropna(subset=[col_fecha, col_dtf])
-        
-        # Asegurar que DTF sea numérico
-        df[col_dtf] = pd.to_numeric(df[col_dtf], errors='coerce')
-        df = df.dropna(subset=[col_dtf])
-        
+        # Usamos columna 0 para fecha y 1 para tasa
         tasas_map = {}
-        for _, row in df.iterrows():
-            f = row[col_fecha]
-            tasas_map[(f.year, f.month)] = float(row[col_dtf])
+        for _, row in df_data.iterrows():
+            f_val = row.iloc[0]
+            t_val = row.iloc[1]
             
+            # Conversión de fecha
+            dt = pd.to_datetime(f_val, errors='coerce')
+            
+            # Conversión de tasa (manejando puntos o caracteres no numéricos)
+            try:
+                rate = float(t_val)
+            except (ValueError, TypeError):
+                rate = None
+            
+            if pd.notnull(dt) and rate is not None:
+                tasas_map[(dt.year, dt.month)] = rate
+                
         return tasas_map
     except Exception as e:
-        st.error(f"Error al procesar el Excel: {e}")
+        st.error(f"Error al procesar el Excel (Columnas A y B): {e}")
         return None
 
 def calcular_interes_pasivocol(capital, tasa_anual, fecha_pago_mesada, fecha_corte):
     """
-    Fórmula: I = CP * ((1 + DTF)^(n/365) - 1)
+    Fórmula de Pasivocol: I = CP * ((1 + DTF)^(n/365) - 1)
     """
     # Fecha Causación: último día del mes de pago
     fecha_causacion = (fecha_pago_mesada + relativedelta(day=31))
     
-    # El interés inicia el mes siguiente
-    fecha_inicio_interes = fecha_causacion + relativedelta(days=1)
-    
-    if fecha_corte < fecha_inicio_interes:
+    # El interés inicia el día siguiente a la causación
+    if fecha_corte <= fecha_causacion:
         return 0, 0, fecha_causacion
     
     dias = (fecha_corte - fecha_causacion).days
@@ -86,30 +77,27 @@ def calcular_interes_pasivocol(capital, tasa_anual, fecha_pago_mesada, fecha_cor
 # --- INTERFAZ ---
 
 st.title("🏦 Liquidador de Cuotas Partes - Estilo Pasivocol")
-st.markdown("Liquidación técnica con **DTF mensual del Banco de la República**, mesadas anualizadas y primas de ley.")
+st.markdown("Liquidación técnica utilizando **Columna A (Fecha)** y **Columna B (Tasa)** del archivo Excel.")
 
 with st.sidebar:
     st.header("1. Carga de Tasas")
     archivo_excel = st.file_uploader("Subir Excel de BanRep (Hoja: 'Series de datos')", type=["xlsx"])
-    tasa_manual = st.number_input("Tasa de respaldo (%)", value=12.0, help="Se usará solo si el mes no está en el Excel.")
+    tasa_manual = st.number_input("Tasa de respaldo (%)", value=12.0)
 
     st.divider()
-    st.header("2. Parámetros de Liquidación")
+    st.header("2. Datos de Liquidación")
     pensionado = st.text_input("Nombre del Pensionado", "Juan Pérez")
     porcentaje_cp = st.number_input("% Cuota Parte", value=50.0, step=0.1)
-    fecha_corte = st.date_input("Fecha de Corte (Hasta cuándo liquidar)", value=date.today())
+    fecha_corte = st.date_input("Fecha de Corte", value=date.today())
 
-st.subheader("1. Periodo de Liquidación")
+st.subheader("1. Periodo y Mesadas Anuales")
 col_f1, col_f2 = st.columns(2)
 with col_f1:
-    f_inicio = st.date_input("Fecha Inicio", value=date(2022, 1, 1))
+    f_inicio = st.date_input("Fecha Inicio Liquidación", value=date(2022, 1, 1))
 with col_f2:
-    f_fin = st.date_input("Fecha Fin", value=date(2023, 12, 31))
+    f_fin = st.date_input("Fecha Fin Liquidación", value=date(2023, 12, 31))
 
 # --- ENTRADA DE MESADAS POR AÑO ---
-st.subheader("2. Valor de Mesada por Año")
-st.info("Actualice aquí el valor de la mesada de cada año. Se aplicará a los 12 meses y a las primas de junio/diciembre.")
-
 años_rango = list(range(f_inicio.year, f_fin.year + 1))
 df_mesadas_anuales = pd.DataFrame({
     "Año": años_rango,
@@ -129,14 +117,14 @@ edit_mesadas = st.data_editor(
 mesadas_map = edit_mesadas.set_index("Año")["Valor_Mesada"].to_dict()
 
 # --- PROCESAMIENTO ---
-if st.button("🚀 Generar Liquidación Pasivocol", type="primary"):
+if st.button("🚀 Generar Liquidación Detallada", type="primary"):
     tasas_db = {}
     if archivo_excel:
         tasas_db = cargar_tasas_banrep(archivo_excel)
         if tasas_db:
-            st.success(f"✅ Se cargaron {len(tasas_db)} periodos de tasas desde el Excel.")
+            st.success(f"✅ Datos cargados: {len(tasas_db)} periodos encontrados en Columna A y B.")
         else:
-            st.warning("⚠️ No se pudo extraer la información del Excel. Se usará la tasa de respaldo.")
+            st.warning("⚠️ No se detectaron datos válidos en el Excel. Se usará tasa de respaldo.")
 
     # Generar todos los meses en el rango
     resultados = []
@@ -147,31 +135,29 @@ if st.button("🚀 Generar Liquidación Pasivocol", type="primary"):
         mes = fecha_actual.month
         
         mesada_mensual = mesadas_map.get(anio, 0)
-        # Intentar obtener tasa del Excel, si no existe usar la manual
+        # Buscar tasa en Excel (Columna B mapeada), si no existe usar manual
         tasa_aplicable = tasas_db.get((anio, mes), tasa_manual)
         
-        # Tipos de mesada: Normal + Adicionales en Junio y Diciembre
-        tipos_mesada = [{"nombre": f"{anio}-{mes:02d}", "multiplicador": 1}]
-        
+        # Lógica de mesada normal + Prima (Junio y Diciembre)
+        registros_mes = [{"tipo": "Normal", "label": f"{anio}-{mes:02d}"}]
         if mes == 6:
-            tipos_mesada.append({"nombre": f"{anio}-{mes:02d} (Prima)", "multiplicador": 1})
+            registros_mes.append({"tipo": "Prima", "label": f"{anio}-{mes:02d} (Prima Junio)"})
         if mes == 12:
-            tipos_mesada.append({"nombre": f"{anio}-{mes:02d} (Prima)", "multiplicador": 1})
+            registros_mes.append({"tipo": "Prima", "label": f"{anio}-{mes:02d} (Prima Diciembre)"})
         
-        for item in tipos_mesada:
+        for reg in registros_mes:
             # Fecha de pago: último día del mes
             f_pago = (fecha_actual + relativedelta(months=1, days=-1))
             
-            # Valor de la mesada para este registro
-            valor_pensional = mesada_mensual * item["multiplicador"]
-            cp_principal = valor_pensional * (porcentaje_cp / 100)
+            # Valor de la mesada y cuota parte
+            cp_principal = mesada_mensual * (porcentaje_cp / 100)
             
-            # Cálculo intereses
+            # Cálculo intereses y fecha causación
             interes_v, dias_m, f_causacion = calcular_interes_pasivocol(cp_principal, tasa_aplicable, f_pago, fecha_corte)
             
             resultados.append({
-                "Periodo": item["nombre"],
-                "Mesada Pensional": valor_pensional,
+                "Periodo": reg["label"],
+                "Mesada Pensional": mesada_mensual,
                 "% Cuota Parte": porcentaje_cp,
                 "Cuota Parte": cp_principal,
                 "Fecha Causación": f_causacion,
@@ -188,12 +174,11 @@ if st.button("🚀 Generar Liquidación Pasivocol", type="primary"):
     # --- RESULTADOS ---
     st.divider()
     c1, c2, c3 = st.columns(3)
-    c1.metric("Total Cuota Parte (Principal)", f"$ {df_final['Cuota Parte'].sum():,.0f}")
+    c1.metric("Total Cuota Parte", f"$ {df_final['Cuota Parte'].sum():,.0f}")
     c2.metric("Total Intereses", f"$ {df_final['Intereses'].sum():,.0f}")
-    c3.metric("GRAN TOTAL DEUDA", f"$ {df_final['Total'].sum():,.0f}")
+    c3.metric("GRAN TOTAL", f"$ {df_final['Total'].sum():,.0f}")
 
-    # Estructura visual Pasivocol
-    st.write("### Cuadro Detallado de Liquidación")
+    # Estructura Pasivocol
     st.dataframe(
         df_final.style.format({
             "Mesada Pensional": "${:,.0f}",
@@ -209,12 +194,4 @@ if st.button("🚀 Generar Liquidación Pasivocol", type="primary"):
 
     # Descargas
     csv = df_final.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Descargar Reporte (CSV)", csv, f"liquidacion_{pensionado}.csv", "text/csv")
-
-    # Gráfico de barras de la deuda
-    fig = go.Figure(data=[
-        go.Bar(name='Capital', x=df_final['Periodo'], y=df_final['Cuota Parte']),
-        go.Bar(name='Intereses', x=df_final['Periodo'], y=df_final['Intereses'])
-    ])
-    fig.update_layout(barmode='stack', title="Composición de la Deuda por Periodo", xaxis_title="Periodo", yaxis_title="Valor ($)")
-    st.plotly_chart(fig, use_container_width=True)
+    st.download_button("📥 Descargar Liquidación (CSV)", csv, f"liquidacion_{pensionado}.csv", "text/csv")
