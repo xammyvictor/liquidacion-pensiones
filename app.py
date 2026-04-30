@@ -138,15 +138,17 @@ with tabs_input[1]:
             {"Fecha_Abono": date(2024, 1, 15), "Valor_Abono": 0.0, "Modo": "FIFO (Hacia Deuda Antigua)", "Periodos_Destino": []}
         ])
 
-    # Aseguramos que la columna Periodos_Destino siempre sea tratada como una lista de objetos
-    # para que MultiselectColumn funcione sin errores de tipo
-    if not st.session_state.abonos_data.empty:
-        st.session_state.abonos_data["Periodos_Destino"] = st.session_state.abonos_data["Periodos_Destino"].apply(
-            lambda x: x if isinstance(x, list) else []
-        )
+    # PARCHE DE SEGURIDAD: Si el usuario tiene una sesión vieja abierta, la columna podría no existir
+    if "Periodos_Destino" not in st.session_state.abonos_data.columns:
+        st.session_state.abonos_data["Periodos_Destino"] = [[] for _ in range(len(st.session_state.abonos_data))]
+
+    # Aseguramos que la columna Periodos_Destino siempre contenga listas (para evitar el TypeError en el Multiselect)
+    st.session_state.abonos_data["Periodos_Destino"] = st.session_state.abonos_data["Periodos_Destino"].apply(
+        lambda x: x if isinstance(x, list) else []
+    )
 
     # El editor de datos configurado para multiselección
-    # Se usa una 'key' dinámica basada en la longitud de la lista de periodos para forzar refresco si cambian las fechas
+    # Se usa una 'key' dinámica basada en la longitud de la lista de periodos para forzar refresco
     edit_abonos = st.data_editor(
         st.session_state.abonos_data,
         column_config={
@@ -201,7 +203,6 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
 
     # 2. Procesar Abonos Específicos
     sobrante_bolsa_fifo = 0.0
-    # Obtenemos los abonos que son específicos
     abonos_especificos = edit_abonos[(edit_abonos["Modo"] == "Periodo(s) Específico(s)") & (edit_abonos["Valor_Abono"] > 0)]
     
     for _, abono in abonos_especificos.iterrows():
@@ -258,23 +259,30 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
     # --- RESULTADOS ---
     st.divider()
     st.subheader("📋 Resumen Post-Imputación")
+    
+    total_cap_final = df_final["Cap. Bruto"].sum()
+    total_int_final = df_final["Int. Bruto"].sum()
+    total_pagado = edit_abonos["Valor_Abono"].sum()
+    saldo_final_neto = df_final["Saldo Periodo"].sum()
+
     c1, c2, c3, c4 = st.columns(4)
-    total_bruto = df_final["Cap. Bruto"].sum() + df_final["Int. Bruto"].sum()
-    abonos_totales = edit_abonos["Valor_Abono"].sum()
-    c1.metric("Deuda Bruta Total", f"$ {total_bruto:,.0f}")
-    c2.metric("Total Abonos", f"$ {abonos_totales:,.0f}", delta=f"-{abonos_totales:,.0f}", delta_color="inverse")
-    c3.metric("Intereses Vigentes", f"$ {df_final['Int. Bruto'].sum() - (df_final['Abono Específico a Int.'].sum() + df_final['Abono FIFO a Int.'].sum()):,.0f}")
-    c4.metric("SALDO FINAL", f"$ {df_final['Saldo Periodo'].sum():,.0f}")
+    c1.metric("Valor Cuotaparte (Cap)", f"$ {total_cap_final:,.0f}")
+    c2.metric("Total Intereses", f"$ {total_int_final:,.0f}")
+    c3.metric("Abonos Realizados", f"$ {total_pagado:,.0f}", delta=f"-{total_pagado:,.0f}", delta_color="inverse")
+    c4.metric("SALDO FINAL NETO", f"$ {saldo_final_neto:,.0f}")
 
     df_view = df_final.copy()
     df_view["Pagos a Interés"] = df_view["Abono Específico a Int."] + df_view["Abono FIFO a Int."]
     df_view["Pagos a Capital"] = df_view["Abono Específico a Cap."] + df_view["Abono FIFO a Cap."]
     
     cols_mostrar = ["Periodo", "Cap. Bruto", "Int. Bruto", "Pagos a Interés", "Pagos a Capital", "Saldo Periodo"]
-    st.dataframe(df_view[cols_mostrar].style.format({
-        "Cap. Bruto": "${:,.0f}", "Int. Bruto": "${:,.0f}",
-        "Pagos a Interés": "${:,.0f}", "Pagos a Capital": "${:,.0f}", "Saldo Periodo": "${:,.0f}"
-    }), use_container_width=True)
+    st.dataframe(
+        df_view[cols_mostrar].style.format({
+            "Cap. Bruto": "${:,.0f}", "Int. Bruto": "${:,.0f}",
+            "Pagos a Interés": "${:,.0f}", "Pagos a Capital": "${:,.0f}", "Saldo Periodo": "${:,.0f}"
+        }), 
+        use_container_width=True
+    )
 
     df_abonos_excel = edit_abonos.copy()
     df_abonos_excel["Periodos_Destino"] = df_abonos_excel["Periodos_Destino"].apply(lambda x: ", ".join(x) if isinstance(x, list) else str(x))
