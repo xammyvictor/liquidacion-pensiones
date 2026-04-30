@@ -92,8 +92,8 @@ def to_excel(df_liq, df_abonos, nombre_pensionado):
 
 # --- INTERFAZ STREAMLIT ---
 
-st.title("🏦 Liquidador Pro - Cuotas Partes con Imputación Multiperiodo")
-st.markdown("Sincronizado con **UGPP**. Ahora puede aplicar abonos a **varios meses específicos** simultáneamente.")
+st.title("🏦 Liquidador Pro - Cuotas Partes con Selección de Periodos")
+st.markdown("Sincronizado con **UGPP**. Ahora puede seleccionar los meses específicos de una lista para aplicar abonos.")
 
 with st.sidebar:
     st.header("1. Datos Técnicos")
@@ -118,30 +118,46 @@ with tabs_input[0]:
 
     años_rango = list(range(f_inicio.year, f_fin.year + 1))
     df_mesadas_anuales = pd.DataFrame({"Año": años_rango, "Mesada_Mensual": [3374717.0] * len(años_rango)})
-    edit_mesadas = st.data_editor(df_mesadas_anuales, column_config={"Año": st.column_config.NumberColumn(disabled=True, format="%d"), "Mesada_Mensual": st.column_config.NumberColumn("Valor Mesada ($)", format="$ % d")}, use_container_width=True)
+    edit_mesadas = st.data_editor(df_mesadas_anuales, column_config={"Año": st.column_config.NumberColumn(disabled=True, format="%d"), "Mesada_Mensual": st.column_config.NumberColumn("Valor Mesada ($)", format="$ %d")}, use_container_width=True)
     mesadas_map = edit_mesadas.set_index("Año")["Mesada_Mensual"].to_dict()
 
+# --- GENERAR LISTA DE PERIODOS PARA EL SELECTOR ---
+lista_periodos_posibles = []
+temp_fecha = f_inicio.replace(day=1)
+while temp_fecha <= f_fin:
+    lista_periodos_posibles.append(temp_fecha.strftime("%Y-%m"))
+    temp_fecha += relativedelta(months=1)
+
 with tabs_input[1]:
-    st.subheader("Registro de Abonos Multiperiodo")
+    st.subheader("Registro de Abonos con Selección Múltiple")
     st.markdown("""
-    **Instrucciones para Aplicación Específica:**
-    * Si selecciona **"Periodo(s) Específico(s)"**, puede escribir varios meses separados por coma en la columna **"Periodo(s) Destino"**.
-    * Ejemplo: `2023-01, 2023-02, 2023-03`.
-    * El sistema pagará esos meses en orden. Si sobra dinero, se aplicará al resto de la deuda más antigua (FIFO).
+    **Cómo aplicar abonos:**
+    * **Modo FIFO:** El pago se aplica automáticamente a la deuda más antigua.
+    * **Modo Periodo(s) Específico(s):** Seleccione uno o varios meses de la lista desplegable. 
+    * El sistema pagará esos meses en orden. Los excedentes se aplicarán al resto de la deuda (FIFO).
     """)
     
+    # Inicializar estado si no existe con el formato de lista para el multiselect
     if 'abonos_data' not in st.session_state:
         st.session_state.abonos_data = pd.DataFrame([
-            {"Fecha_Abono": date(2024, 1, 15), "Valor_Abono": 0.0, "Modo": "FIFO (Hacia Deuda Antigua)", "Periodos_Destino": "N/A"}
+            {"Fecha_Abono": date(2024, 1, 15), "Valor_Abono": 0.0, "Modo": "FIFO (Hacia Deuda Antigua)", "Periodos_Destino": []}
         ])
 
+    # El editor de datos con MultiselectColumn
     edit_abonos = st.data_editor(
         st.session_state.abonos_data,
         column_config={
             "Fecha_Abono": st.column_config.DateColumn("Fecha Pago"),
             "Valor_Abono": st.column_config.NumberColumn("Valor Pagado ($)", format="$ %d"),
-            "Modo": st.column_config.SelectboxColumn("Modo de Aplicación", options=["FIFO (Hacia Deuda Antigua)", "Periodo(s) Específico(s)"]),
-            "Periodos_Destino": st.column_config.TextColumn("Periodo(s) Destino", help="Escriba los meses separados por coma, ej: 2023-01, 2023-02")
+            "Modo": st.column_config.SelectboxColumn(
+                "Modo de Aplicación", 
+                options=["FIFO (Hacia Deuda Antigua)", "Periodo(s) Específico(s)"]
+            ),
+            "Periodos_Destino": st.column_config.MultiselectColumn(
+                "Seleccionar Mes(es)", 
+                options=lista_periodos_posibles,
+                help="Seleccione los meses a los que desea aplicar este abono"
+            )
         },
         num_rows="dynamic",
         use_container_width=True
@@ -178,17 +194,19 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
         })
         fecha_actual += relativedelta(months=1)
 
-    # 2. Procesar Abonos Específicos (pueden ser múltiples periodos por fila)
+    # 2. Procesar Abonos Específicos (ahora vienen como listas desde el Multiselect)
     sobrante_bolsa_fifo = 0.0
     abonos_especificos = edit_abonos[(edit_abonos["Modo"] == "Periodo(s) Específico(s)") & (edit_abonos["Valor_Abono"] > 0)]
     
     for _, abono in abonos_especificos.iterrows():
-        # Parsear los periodos ingresados (limpiar espacios y separar por coma)
-        raw_periodos = str(abono["Periodos_Destino"]).split(",")
-        targets = [p.strip() for p in raw_periodos if p.strip() != "N/A"]
+        # Los periodos seleccionados ya vienen como una lista de Python
+        targets = abono["Periodos_Destino"]
+        if not isinstance(targets, list):
+            targets = []
+            
         valor_disponible = abono["Valor_Abono"]
         
-        # Aplicar el valor a los periodos seleccionados en orden cronológico
+        # Aplicar el valor a los periodos seleccionados en orden cronológico dentro de la liquidación
         for res in resultados_liq:
             if res["Periodo"] in targets:
                 # Pagar intereses pendientes del periodo seleccionado
@@ -206,7 +224,7 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
                 if valor_disponible <= 0:
                     break
         
-        # Si sobra dinero después de cubrir los periodos específicos, va a la bolsa FIFO
+        # Si sobra dinero después de cubrir los seleccionados, va a la bolsa FIFO
         if valor_disponible > 0:
             sobrante_bolsa_fifo += valor_disponible
 
@@ -263,5 +281,9 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
     }), use_container_width=True)
 
     # Excel
-    excel_data = to_excel(df_final, edit_abonos, pensionado)
+    # Para el Excel, convertimos las listas de periodos a strings para que no causen error
+    df_abonos_excel = edit_abonos.copy()
+    df_abonos_excel["Periodos_Destino"] = df_abonos_excel["Periodos_Destino"].apply(lambda x: ", ".join(x) if isinstance(x, list) else str(x))
+    
+    excel_data = to_excel(df_final, df_abonos_excel, pensionado)
     st.download_button("📥 Descargar Reporte Completo (Excel)", excel_data, f"Liquidacion_Multiperiodo_{pensionado}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
