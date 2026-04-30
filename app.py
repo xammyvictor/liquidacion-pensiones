@@ -127,18 +127,17 @@ with tabs_input[0]:
 
     años_rango = list(range(f_inicio.year, f_fin.year + 1))
     
-    # Inicialización estable de mesadas
-    if 'mesadas_df' not in st.session_state:
-        st.session_state.mesadas_df = pd.DataFrame({"Año": años_rango, "Mesada_Mensual": [3374717.0] * len(años_rango)})
-    
-    # Solo actualizar si el rango cambió realmente
-    if set(st.session_state.mesadas_df["Año"]) != set(años_rango):
-        df_old = st.session_state.mesadas_df
-        nuevos_datos = []
-        for anio in años_rango:
-            val_existente = df_old.loc[df_old["Año"] == anio, "Mesada_Mensual"].values
-            nuevos_datos.append({"Año": anio, "Mesada_Mensual": val_existente[0] if len(val_existente) > 0 else 3374717.0})
-        st.session_state.mesadas_df = pd.DataFrame(nuevos_datos)
+    # Inicialización persistente de mesadas (EVITA BLOQUEO)
+    if 'mesadas_df' not in st.session_state or set(st.session_state.mesadas_df["Año"]) != set(años_rango):
+        if 'mesadas_df' not in st.session_state:
+            st.session_state.mesadas_df = pd.DataFrame({"Año": años_rango, "Mesada_Mensual": [3374717.0] * len(años_rango)})
+        else:
+            df_old = st.session_state.mesadas_df
+            nuevos_datos = []
+            for anio in años_rango:
+                val_existente = df_old.loc[df_old["Año"] == anio, "Mesada_Mensual"].values
+                nuevos_datos.append({"Año": anio, "Mesada_Mensual": val_existente[0] if len(val_existente) > 0 else 3374717.0})
+            st.session_state.mesadas_df = pd.DataFrame(nuevos_datos)
 
     edit_mesadas = st.data_editor(
         st.session_state.mesadas_df, 
@@ -147,7 +146,7 @@ with tabs_input[0]:
             "Mesada_Mensual": st.column_config.NumberColumn("Valor Mesada ($)", format="$ % d")
         }, 
         use_container_width=True,
-        key="editor_mesadas_final"
+        key="editor_mesadas_v1"
     )
     st.session_state.mesadas_df = edit_mesadas
     mesadas_map = edit_mesadas.set_index("Año")["Mesada_Mensual"].to_dict()
@@ -163,18 +162,15 @@ with tabs_input[1]:
     st.subheader("Registro de Abonos")
     st.info("💡 Haz **doble clic** en la celda 'Seleccionar Mes(es)'. El dinero se aplicará en el **orden exacto** que elijas.")
     
+    # Inicialización persistente de abonos (EVITA BLOQUEO)
     if 'abonos_data' not in st.session_state:
         st.session_state.abonos_data = pd.DataFrame([
             {"Fecha_Abono": date(2024, 1, 15), "Valor_Abono": 0.0, "Modo": "FIFO (Hacia Deuda Antigua)", "Periodos_Destino": []}
         ])
 
-    # Asegurar integridad de columnas
+    # Aseguramos que la columna Periodos_Destino siempre sea tratada como una lista de objetos antes del editor
     if "Periodos_Destino" not in st.session_state.abonos_data.columns:
         st.session_state.abonos_data["Periodos_Destino"] = [[] for _ in range(len(st.session_state.abonos_data))]
-    
-    st.session_state.abonos_data["Periodos_Destino"] = st.session_state.abonos_data["Periodos_Destino"].apply(
-        lambda x: x if isinstance(x, list) else []
-    )
 
     edit_abonos = st.data_editor(
         st.session_state.abonos_data,
@@ -193,7 +189,7 @@ with tabs_input[1]:
         },
         num_rows="dynamic",
         use_container_width=True,
-        key=f"editor_abonos_estable_{len(lista_periodos_posibles)}"
+        key="editor_abonos_v1"
     )
     st.session_state.abonos_data = edit_abonos
 
@@ -228,28 +224,32 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
 
     # 2. Procesar Abonos Específicos (ORDEN DE SELECCIÓN)
     sobrante_bolsa_fifo = 0.0
-    abonos_especificos = edit_abonos[(edit_abonos["Modo"] == "Periodo(s) Específico(s)") & (edit_abonos["Valor_Abono"] > 0)]
+    df_abonos_proc = st.session_state.abonos_data
+    abonos_especificos = df_abonos_proc[(df_abonos_proc["Modo"] == "Periodo(s) Específico(s)") & (df_abonos_proc["Valor_Abono"] > 0)]
     
     for _, abono in abonos_especificos.iterrows():
         targets = abono["Periodos_Destino"]
+        # Seguridad contra nulos
         if targets is None or not isinstance(targets, list):
             targets = []
             
         valor_disponible = abono["Valor_Abono"]
         
+        # IMPUTACIÓN EN EL ORDEN EXACTO DE LA LISTA targets
         for target_period in targets:
             if valor_disponible <= 0:
                 break
-            # Localizar el periodo en la deuda
+            
             res = next((r for r in resultados_liq if r["Periodo"] == target_period), None)
+            
             if res:
-                # Interés del periodo
+                # 1. Pago a interés del periodo específico
                 int_pdte = res["Int. Bruto"] - (res["Abono Específico a Int."] + res["Abono FIFO a Int."])
                 pago_int = min(max(0.0, int_pdte), valor_disponible)
                 res["Abono Específico a Int."] += round(pago_int, 2)
                 valor_disponible -= pago_int
                 
-                # Capital del periodo
+                # 2. Pago a capital del periodo específico
                 cap_pdte = res["Cap. Bruto"] - (res["Abono Específico a Cap."] + res["Abono FIFO a Cap."])
                 pago_cap = min(max(0.0, cap_pdte), valor_disponible)
                 res["Abono Específico a Cap."] += round(pago_cap, 2)
@@ -258,8 +258,8 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
         if valor_disponible > 0:
             sobrante_bolsa_fifo += valor_disponible
 
-    # 3. Procesar Abonos FIFO (Cronológico sobre el saldo restante)
-    bolsa_pagos_fifo = edit_abonos[(edit_abonos["Modo"] == "FIFO (Hacia Deuda Antigua)") & (edit_abonos["Valor_Abono"] > 0)]["Valor_Abono"].sum()
+    # 3. Procesar Abonos FIFO (Cronológico)
+    bolsa_pagos_fifo = df_abonos_proc[(df_abonos_proc["Modo"] == "FIFO (Hacia Deuda Antigua)") & (df_abonos_proc["Valor_Abono"] > 0)]["Valor_Abono"].sum()
     bolsa_pagos_fifo += sobrante_bolsa_fifo
     
     if sobrante_bolsa_fifo > 0:
@@ -291,7 +291,7 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
     total_int = df_final["Int. Bruto"].sum()
     c1.metric("Valor Cuotaparte (Cap)", f"$ {total_cap:,.0f}")
     c2.metric("Total Intereses", f"$ {total_int:,.0f}")
-    c3.metric("Abonos Realizados", f"$ {edit_abonos['Valor_Abono'].sum():,.0f}")
+    c3.metric("Abonos Realizados", f"$ {st.session_state.abonos_data['Valor_Abono'].sum():,.0f}")
     c4.metric("SALDO FINAL NETO", f"$ {df_final['Saldo Periodo'].sum():,.0f}")
 
     df_view = df_final.copy()
@@ -302,7 +302,7 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
         "Cap. Bruto": "${:,.0f}", "Int. Bruto": "${:,.0f}", "Pagos a Interés": "${:,.0f}", "Pagos a Capital": "${:,.0f}", "Saldo Periodo": "${:,.0f}"
     }), use_container_width=True)
 
-    excel_data = to_excel(df_final, edit_abonos, pensionado)
+    excel_data = to_excel(df_final, st.session_state.abonos_data, pensionado)
     st.download_button(
         label="📥 Descargar Reporte (Excel)",
         data=excel_data,
