@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 from datetime import date
 from dateutil.relativedelta import relativedelta
 import io
@@ -94,7 +93,6 @@ def calcular_interes_pasivocol_preciso(
     )
 
     i_decimal = tasa_aplicable / 100
-
     interes = capital * ((1 + i_decimal) ** (n / 365) - 1)
 
     return round(float(interes), 2), n, f_inicio_interes, tasa_aplicable
@@ -126,17 +124,12 @@ def to_excel(df_liq, df_abonos, nombre_pensionado):
             "align": "center"
         })
 
-        fmt_header = workbook.add_format({
-            "bold": True,
-            "bg_color": "#D7E4BC",
-            "border": 1
-        })
-
         ws_liq.set_column("A:A", 12)
         ws_liq.set_column("B:D", 18, fmt_money)
-        ws_liq.set_column("E:E", 12, fmt_pct)
-        ws_liq.set_column("F:J", 22, fmt_money)
-        ws_liq.set_column("K:K", 18, fmt_money)
+        ws_liq.set_column("E:E", 12)
+        ws_liq.set_column("F:F", 12, fmt_pct)
+        ws_liq.set_column("G:K", 22, fmt_money)
+        ws_liq.set_column("L:L", 18, fmt_money)
 
         ws_abo.set_column("A:A", 15, fmt_date)
         ws_abo.set_column("B:B", 20, fmt_money)
@@ -238,7 +231,6 @@ with tabs_input[0]:
 # --- GENERAR LISTA DE PERIODOS ---
 
 lista_periodos_posibles = []
-
 temp_fecha = f_inicio.replace(day=1)
 
 while temp_fecha <= f_fin:
@@ -315,7 +307,6 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
     # 1. Generar registros de deuda bruta
 
     resultados_liq = []
-
     fecha_actual = f_inicio.replace(day=1)
 
     while fecha_actual <= f_fin:
@@ -349,6 +340,7 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
             "Mesada Pensional": float(mesada_pensional),
             "Cap. Bruto": float(cp_principal),
             "Int. Bruto": float(interes_v),
+            "Días Interés": int(dias_n),
             "Tasa DTF": float(tasa_usada / 100),
             "Abono Específico a Int.": 0.0,
             "Abono Específico a Cap.": 0.0,
@@ -359,7 +351,6 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
 
         fecha_actual += relativedelta(months=1)
 
-    # Diccionario para encontrar más rápido cada periodo
     resultados_por_periodo = {
         res["Periodo"]: res
         for res in resultados_liq
@@ -483,7 +474,9 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
 
     st.subheader("📋 Resumen Post-Imputación")
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
+
+    total_cuota_parte = df_final["Cap. Bruto"].sum()
 
     total_bruto = (
         df_final["Cap. Bruto"].sum()
@@ -503,23 +496,28 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
     saldo_final = df_final["Saldo Periodo"].sum()
 
     c1.metric(
+        "Valor Total Cuota Parte",
+        f"$ {total_cuota_parte:,.0f}"
+    )
+
+    c2.metric(
         "Deuda Bruta Total",
         f"$ {total_bruto:,.0f}"
     )
 
-    c2.metric(
+    c3.metric(
         "Total Abonos",
         f"$ {abonos_totales:,.0f}",
         delta=f"-{abonos_totales:,.0f}",
         delta_color="inverse"
     )
 
-    c3.metric(
+    c4.metric(
         "Intereses Vigentes",
         f"$ {intereses_vigentes:,.0f}"
     )
 
-    c4.metric(
+    c5.metric(
         "SALDO FINAL",
         f"$ {saldo_final:,.0f}"
     )
@@ -540,6 +538,8 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
         "Periodo",
         "Cap. Bruto",
         "Int. Bruto",
+        "Días Interés",
+        "Tasa DTF",
         "Pagos a Interés",
         "Pagos a Capital",
         "Saldo Periodo"
@@ -549,6 +549,8 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
         df_view[cols_mostrar].style.format({
             "Cap. Bruto": "${:,.0f}",
             "Int. Bruto": "${:,.0f}",
+            "Días Interés": "{:,.0f}",
+            "Tasa DTF": "{:.2%}",
             "Pagos a Interés": "${:,.0f}",
             "Pagos a Capital": "${:,.0f}",
             "Saldo Periodo": "${:,.0f}"
