@@ -207,26 +207,31 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
     abonos_especificos = edit_abonos[(edit_abonos["Modo"] == "Periodo(s) Específico(s)") & (edit_abonos["Valor_Abono"] > 0)]
     
     for _, abono in abonos_especificos.iterrows():
-        targets = abono["Periodos_Destino"] # Arreglo en el orden seleccionado
+        targets = abono["Periodos_Destino"]
+        # CORRECCIÓN DE ERROR: Validar que targets no sea None antes de iterar
+        if targets is None or not isinstance(targets, list):
+            targets = []
+            
         valor_disponible = abono["Valor_Abono"]
         
+        # Iterar exactamente en el orden en que fueron seleccionados en la lista
         for target_period in targets:
-            # Buscamos el registro del periodo en la liquidación
+            if valor_disponible <= 0:
+                break
             res = next((r for r in resultados_liq if r["Periodo"] == target_period), None)
-            if res and valor_disponible > 0:
+            if res:
                 # 1. Pago a interés del mes seleccionado
                 int_pdte = res["Int. Bruto"] - (res["Abono Específico a Int."] + res["Abono FIFO a Int."])
-                pago_int = min(int_pdte, valor_disponible)
+                pago_int = min(max(0.0, int_pdte), valor_disponible)
                 res["Abono Específico a Int."] += round(pago_int, 2)
                 valor_disponible -= pago_int
                 
                 # 2. Pago a capital del mes seleccionado
                 cap_pdte = res["Cap. Bruto"] - (res["Abono Específico a Cap."] + res["Abono FIFO a Cap."])
-                pago_cap = min(cap_pdte, valor_disponible)
+                pago_cap = min(max(0.0, cap_pdte), valor_disponible)
                 res["Abono Específico a Cap."] += round(pago_cap, 2)
                 valor_disponible -= pago_cap
                 
-        # Remanente se suma a FIFO
         if valor_disponible > 0:
             sobrante_bolsa_fifo += valor_disponible
 
@@ -241,11 +246,11 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
         int_remanente = res["Int. Bruto"] - (res["Abono Específico a Int."] + res["Abono FIFO a Int."])
         cap_remanente = res["Cap. Bruto"] - (res["Abono Específico a Cap."] + res["Abono FIFO a Cap."])
         
-        pago_fifo_int = min(int_remanente, bolsa_pagos_fifo)
+        pago_fifo_int = min(max(0.0, int_remanente), bolsa_pagos_fifo)
         res["Abono FIFO a Int."] += round(pago_fifo_int, 2)
         bolsa_pagos_fifo -= pago_fifo_int
         
-        pago_fifo_cap = min(cap_remanente, bolsa_pagos_fifo)
+        pago_fifo_cap = min(max(0.0, cap_remanente), bolsa_pagos_fifo)
         res["Abono FIFO a Cap."] += round(pago_fifo_cap, 2)
         bolsa_pagos_fifo -= pago_fifo_cap
         
@@ -275,4 +280,9 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
     }), use_container_width=True)
 
     excel_data = to_excel(df_final, edit_abonos, pensionado)
-    st.download_button("📥 Descargar Reporte (Excel)", excel_data, f"Liquidacion_Pro_{pensionado}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button(
+        label="📥 Descargar Reporte (Excel)",
+        data=excel_data,
+        file_name=f"Liquidacion_Pro_{pensionado}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
