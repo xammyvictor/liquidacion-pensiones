@@ -5,7 +5,7 @@ from dateutil.relativedelta import relativedelta
 import io
 
 st.set_page_config(
-    page_title="Liquidador Pasivocol DTF",
+    page_title="Liquidador DTF",
     page_icon="🏦",
     layout="wide"
 )
