@@ -102,11 +102,11 @@ st.markdown("Sincronizado con **UGPP**. Estabilidad de celdas mejorada e imputac
 with st.sidebar:
     st.header("1. Datos Técnicos")
     archivo_excel = st.file_uploader("Excel BanRep (Serie DTF)", type=["xlsx"])
-    tasa_manual = st.number_input("Tasa de respaldo (%)", value=5.0)
+    tasa_manual = st.number_input("Tasa de respaldo (%)", value=0.0)
     st.divider()
     st.header("2. Información del Caso")
-    pensionado = st.text_input("Nombre del Pensionado", "JOSE OSCAR ORTIZ")
-    porcentaje_cp = st.number_input("% Cuota Parte", value=37.38, step=0.01)
+    pensionado = st.text_input("Nombre del Pensionado", "")
+    porcentaje_cp = st.number_input("% Cuota Parte", value=0.0, step=0.01)
     fecha_corte = st.date_input("Fecha de Corte", value=date.today())
 
 # Tabs de configuración
@@ -118,21 +118,21 @@ with tabs_input[0]:
     with col_f1:
         f_inicio = st.date_input("Fecha Inicio", value=date(2022, 1, 1))
     with col_f2:
-        f_fin = st.date_input("Fecha Fin", value=date(2026, 4, 30))
+        f_fin = st.date_input("Fecha Fin", value=date.today())
 
     años_rango = list(range(f_inicio.year, f_fin.year + 1))
     
-    # Inicialización única de Mesadas
+    # Inicialización única de Mesadas (ahora en 0.0)
     if 'mesadas_df' not in st.session_state:
-        st.session_state.mesadas_df = pd.DataFrame({"Año": años_rango, "Mesada_Mensual": [3374717.0] * len(años_rango)})
+        st.session_state.mesadas_df = pd.DataFrame({"Año": años_rango, "Mesada_Mensual": [0.0] * len(años_rango)})
     
-    # Sincronización de años (solo si el rango cambia, manteniendo valores previos)
+    # Sincronización de años
     if set(st.session_state.mesadas_df["Año"]) != set(años_rango):
         df_old = st.session_state.mesadas_df
         nuevos_datos = []
         for anio in años_rango:
             val_existente = df_old.loc[df_old["Año"] == anio, "Mesada_Mensual"].values
-            nuevos_datos.append({"Año": anio, "Mesada_Mensual": val_existente[0] if len(val_existente) > 0 else 3374717.0})
+            nuevos_datos.append({"Año": anio, "Mesada_Mensual": val_existente[0] if len(val_existente) > 0 else 0.0})
         st.session_state.mesadas_df = pd.DataFrame(nuevos_datos)
 
     # Editor con Key FIJA para evitar bloqueos
@@ -159,10 +159,10 @@ with tabs_input[1]:
     st.subheader("Registro de Abonos")
     st.info("💡 El abono se imputará siguiendo el **orden exacto** en que selecciones los meses.")
     
-    # Inicialización única de Abonos
+    # Inicialización única de Abonos (con valores en cero)
     if 'abonos_data' not in st.session_state:
         st.session_state.abonos_data = pd.DataFrame([
-            {"Fecha_Abono": date(2024, 1, 15), "Valor_Abono": 0.0, "Modo": "FIFO (Hacia Deuda Antigua)", "Periodos_Destino": []}
+            {"Fecha_Abono": date.today(), "Valor_Abono": 0.0, "Modo": "FIFO (Hacia Deuda Antigua)", "Periodos_Destino": []}
         ])
 
     # Forzar que la columna sea lista para el Multiselect
@@ -236,7 +236,6 @@ if st.button("🚀 Calcular Liquidación", type="primary"):
             
         valor_disponible = abono["Valor_Abono"]
         
-        # Iteración por el ORDEN de la lista 'targets' (el orden en que hiciste clic)
         for target_period in targets:
             if valor_disponible <= 0:
                 break
@@ -287,10 +286,10 @@ if st.button("🚀 Calcular Liquidación", type="primary"):
     c1, c2, c3, c4 = st.columns(4)
     total_cap = df_final["Cap. Bruto"].sum()
     total_int = df_final["Int. Bruto"].sum()
-    total_abonos = st.session_state.abonos_data['Valor_Abono'].sum()
+    total_abonos_val = st.session_state.abonos_data['Valor_Abono'].sum()
     c1.metric("Valor Cuotaparte (Cap)", f"$ {total_cap:,.0f}")
     c2.metric("Total Intereses", f"$ {total_int:,.0f}")
-    c3.metric("Abonos Realizados", f"$ {total_abonos:,.0f}", delta=f"-{total_abonos:,.0f}", delta_color="inverse")
+    c3.metric("Abonos Realizados", f"$ {total_abonos_val:,.0f}", delta=f"-{total_abonos_val:,.0f}", delta_color="inverse")
     c4.metric("SALDO FINAL NETO", f"$ {df_final['Saldo Periodo'].sum():,.0f}")
 
     df_view = df_final.copy()
