@@ -66,12 +66,20 @@ def calcular_interes_pasivocol_preciso(capital, anio_mesada, mes_mesada, fecha_c
     return round(float(interes), 2), n, f_inicio_interes, tasa_aplicable
 
 def to_excel(df_liq, df_abonos, nombre_pensionado):
+    """
+    Exporta a Excel manteniendo los datos numéricos y asegurando que no haya listas en las celdas.
+    """
+    # Limpieza final de columnas con listas para evitar TypeError
+    df_abonos_limpio = df_abonos.copy()
+    for col in df_abonos_limpio.columns:
+        df_abonos_limpio[col] = df_abonos_limpio[col].apply(lambda x: ", ".join(x) if isinstance(x, list) else x)
+
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df_liq.to_excel(writer, index=False, sheet_name='Liquidacion')
         workbook = writer.book
         ws_liq = writer.sheets['Liquidacion']
-        df_abonos.to_excel(writer, index=False, sheet_name='Detalle_Abonos')
+        df_abonos_limpio.to_excel(writer, index=False, sheet_name='Detalle_Abonos')
         ws_abo = writer.sheets['Detalle_Abonos']
         
         fmt_money = workbook.add_format({'num_format': '$#,##0', 'align': 'right'})
@@ -79,6 +87,7 @@ def to_excel(df_liq, df_abonos, nombre_pensionado):
         fmt_date = workbook.add_format({'num_format': 'dd/mm/yyyy', 'align': 'center'})
         fmt_header = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1})
 
+        # B:Mesada, C:%CP, D:CapBruto, E:Fecha, F:Tasa, G:Días, H:IntBruto, I:AbonoInt, J:AbonoCap, K:Saldo
         ws_liq.set_column('B:B', 18, fmt_money)
         ws_liq.set_column('C:C', 10, fmt_pct)
         ws_liq.set_column('D:D', 18, fmt_money)
@@ -214,18 +223,17 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
         
         for target_period in targets:
             # Buscamos el registro correspondiente en la lista de resultados de liquidación
-            # Usamos un generador para encontrar el primer match
             res = next((r for r in resultados_liq if r["Periodo"] == target_period), None)
             
             if res:
                 # Pagar intereses pendientes del periodo seleccionado
-                int_pdte = res["Int. Bruto"] - res["Abono Específico a Int."]
+                int_pdte = res["Int. Bruto"] - (res["Abono Específico a Int."] + res["Abono FIFO a Int."])
                 pago_int = min(int_pdte, valor_disponible)
                 res["Abono Específico a Int."] += round(pago_int, 2)
                 valor_disponible -= pago_int
                 
                 # Pagar capital del periodo seleccionado
-                cap_pdte = res["Cap. Bruto"] - res["Abono Específico a Cap."]
+                cap_pdte = res["Cap. Bruto"] - (res["Abono Específico a Cap."] + res["Abono FIFO a Cap."])
                 pago_cap = min(cap_pdte, valor_disponible)
                 res["Abono Específico a Cap."] += round(pago_cap, 2)
                 valor_disponible -= pago_cap
@@ -245,15 +253,15 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
         st.info(f"💡 Se detectó un excedente de ${sobrante_bolsa_fifo:,.0f} de abonos específicos que se aplicó a la deuda más antigua.")
 
     for res in resultados_liq:
-        int_remanente = res["Int. Bruto"] - res["Abono Específico a Int."]
-        cap_remanente = res["Cap. Bruto"] - res["Abono Específico a Cap."]
+        int_remanente = res["Int. Bruto"] - (res["Abono Específico a Int."] + res["Abono FIFO a Int."])
+        cap_remanente = res["Cap. Bruto"] - (res["Abono Específico a Cap."] + res["Abono FIFO a Cap."])
         
         pago_fifo_int = min(int_remanente, bolsa_pagos_fifo)
-        res["Abono FIFO a Int."] = round(pago_fifo_int, 2)
+        res["Abono FIFO a Int."] += round(pago_fifo_int, 2)
         bolsa_pagos_fifo -= pago_fifo_int
         
         pago_fifo_cap = min(cap_remanente, bolsa_pagos_fifo)
-        res["Abono FIFO a Cap."] = round(pago_fifo_cap, 2)
+        res["Abono FIFO a Cap."] += round(pago_fifo_cap, 2)
         bolsa_pagos_fifo -= pago_fifo_cap
         
         total_deuda = res["Cap. Bruto"] + res["Int. Bruto"]
@@ -291,8 +299,5 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
         use_container_width=True
     )
 
-    df_abonos_excel = edit_abonos.copy()
-    df_abonos_excel["Periodos_Destino"] = df_abonos_excel["Periodos_Destino"].apply(lambda x: ", ".join(x) if isinstance(x, list) else str(x))
-    
-    excel_data = to_excel(df_final, df_abonos_excel, pensionado)
+    excel_data = to_excel(df_final, edit_abonos, pensionado)
     st.download_button("📥 Descargar Reporte Completo (Excel)", excel_data, f"Liquidacion_Pro_{pensionado}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
