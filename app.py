@@ -133,7 +133,8 @@ with tabs_input[1]:
     st.markdown("""
     **Modo de Aplicación:**
     * **FIFO (Hacia Deuda Antigua):** El pago se distribuye automáticamente cubriendo lo más viejo primero.
-    * **Periodo Específico:** El pago se aplica únicamente a los intereses y capital del mes seleccionado.
+    * **Periodo Específico:** El pago se aplica únicamente al mes seleccionado.
+    * **Nota:** Si el abono específico supera la deuda del mes, el sobrante se aplicará automáticamente a la deuda más antigua (FIFO).
     """)
     
     if 'abonos_data' not in st.session_state:
@@ -176,35 +177,54 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
             "Cap. Bruto": float(cp_principal),
             "Int. Bruto": float(interes_v),
             "Tasa DTF": float(tasa_usada / 100),
-            "Abono Específico": 0.0,
-            "Abono FIFO a Int.": 0.0,
-            "Abono FIFO a Cap.": 0.0,
             "Abono Específico a Int.": 0.0,
             "Abono Específico a Cap.": 0.0,
+            "Abono FIFO a Int.": 0.0,
+            "Abono FIFO a Cap.": 0.0,
             "Saldo Periodo": 0.0
         })
         fecha_actual += relativedelta(months=1)
 
-    # 2. Procesar Abonos Específicos Primero
+    # 2. Procesar Abonos Específicos e identificar sobrantes
+    sobrante_especifico_total = 0.0
     abonos_especificos = edit_abonos[(edit_abonos["Modo"] == "Periodo Específico") & (edit_abonos["Valor_Abono"] > 0)]
+    
     for _, abono in abonos_especificos.iterrows():
         periodo_target = abono["Periodo_Destino"]
-        valor_restante = abono["Valor_Abono"]
+        valor_disponible = abono["Valor_Abono"]
+        encontrado = False
+        
         for res in resultados_liq:
             if res["Periodo"] == periodo_target:
-                # Pagar intereses del periodo específico
-                pago_int = min(res["Int. Bruto"], valor_restante)
+                encontrado = True
+                # Primero pagar intereses pendientes del periodo específico
+                int_pdte = res["Int. Bruto"] - res["Abono Específico a Int."]
+                pago_int = min(int_pdte, valor_disponible)
                 res["Abono Específico a Int."] += round(pago_int, 2)
-                valor_restante -= pago_int
-                # Pagar capital del periodo específico
-                pago_cap = min(res["Cap. Bruto"], valor_restante)
+                valor_disponible -= pago_int
+                
+                # Segundo pagar capital del periodo específico
+                cap_pdte = res["Cap. Bruto"] - res["Abono Específico a Cap."]
+                pago_cap = min(cap_pdte, valor_disponible)
                 res["Abono Específico a Cap."] += round(pago_cap, 2)
-                valor_restante -= pago_cap
+                valor_disponible -= pago_cap
+                
+                # Si aún queda dinero de este abono, se va a la bolsa FIFO
+                if valor_disponible > 0:
+                    sobrante_especifico_total += valor_disponible
                 break
+        
+        # Si el periodo no existe en el rango, todo el dinero se va a FIFO
+        if not encontrado:
+            sobrante_especifico_total += valor_disponible
 
-    # 3. Procesar Abonos FIFO (Bolsa General)
+    # 3. Procesar Abonos FIFO (Bolsa General + Sobrantes Específicos)
     bolsa_pagos_fifo = edit_abonos[(edit_abonos["Modo"] == "FIFO (Hacia Deuda Antigua)") & (edit_abonos["Valor_Abono"] > 0)]["Valor_Abono"].sum()
+    bolsa_pagos_fifo += sobrante_especifico_total
     
+    if sobrante_especifico_total > 0:
+        st.info(f"💡 Se detectó un excedente de ${sobrante_especifico_total:,.0f} en abonos específicos, el cual ha sido aplicado a la deuda más antigua.")
+
     for res in resultados_liq:
         # Calcular remanente después de abonos específicos
         int_remanente = res["Int. Bruto"] - res["Abono Específico a Int."]
@@ -220,9 +240,10 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
         res["Abono FIFO a Cap."] = round(pago_fifo_cap, 2)
         bolsa_pagos_fifo -= pago_fifo_cap
         
-        # Saldo Final
+        # Saldo Final del Periodo
         total_deuda = res["Cap. Bruto"] + res["Int. Bruto"]
-        total_pagos = res["Abono Específico a Int."] + res["Abono Específico a Cap."] + res["Abono FIFO a Int."] + res["Abono FIFO a Cap."]
+        total_pagos = (res["Abono Específico a Int."] + res["Abono Específico a Cap."] + 
+                       res["Abono FIFO a Int."] + res["Abono FIFO a Cap."])
         res["Saldo Periodo"] = round(total_deuda - total_pagos, 2)
 
     df_final = pd.DataFrame(resultados_liq)
@@ -239,7 +260,6 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
     c4.metric("SALDO FINAL", f"$ {df_final['Saldo Periodo'].sum():,.0f}")
 
     # Tabla Detallada
-    # Consolidamos columnas de abonos para la vista
     df_view = df_final.copy()
     df_view["Pagos a Interés"] = df_view["Abono Específico a Int."] + df_view["Abono FIFO a Int."]
     df_view["Pagos a Capital"] = df_view["Abono Específico a Cap."] + df_view["Abono FIFO a Cap."]
