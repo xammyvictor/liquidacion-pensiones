@@ -214,7 +214,8 @@ with tabs_input[0]:
                 format="$ %d"
             )
         },
-        use_container_width=True
+        use_container_width=True,
+        key="editor_mesadas"
     )
 
     mesadas_map = edit_mesadas.set_index("Año")["Mesada_Mensual"].to_dict()
@@ -238,24 +239,17 @@ with tabs_input[1]:
         "el orden elegido será respetado al aplicar el abono específico."
     )
 
-    if "abonos_data" not in st.session_state:
-        st.session_state.abonos_data = pd.DataFrame([
-            {
-                "Fecha_Abono": date(2024, 1, 15),
-                "Valor_Abono": 0.0,
-                "Modo": "FIFO (Hacia Deuda Antigua)",
-                "Periodos_Destino": []
-            }
-        ])
-
-    if not st.session_state.abonos_data.empty:
-        st.session_state.abonos_data["Periodos_Destino"] = (
-            st.session_state.abonos_data["Periodos_Destino"]
-            .apply(lambda x: x if isinstance(x, list) else [])
-        )
+    df_abonos_inicial = pd.DataFrame([
+        {
+            "Fecha_Abono": date(2024, 1, 15),
+            "Valor_Abono": 0.0,
+            "Modo": "FIFO (Hacia Deuda Antigua)",
+            "Periodos_Destino": []
+        }
+    ])
 
     edit_abonos = st.data_editor(
-        st.session_state.abonos_data,
+        df_abonos_inicial,
         column_config={
             "Fecha_Abono": st.column_config.DateColumn(
                 "Fecha Pago",
@@ -285,7 +279,18 @@ with tabs_input[1]:
         key="editor_abonos"
     )
 
-    st.session_state.abonos_data = edit_abonos.copy()
+    edit_abonos["Periodos_Destino"] = edit_abonos["Periodos_Destino"].apply(
+        lambda x: x if isinstance(x, list) else []
+    )
+
+    edit_abonos["Valor_Abono"] = pd.to_numeric(
+        edit_abonos["Valor_Abono"],
+        errors="coerce"
+    ).fillna(0.0)
+
+    edit_abonos["Modo"] = edit_abonos["Modo"].fillna(
+        "FIFO (Hacia Deuda Antigua)"
+    )
 
 
 # --- CÁLCULO ---
@@ -353,11 +358,6 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
     # --- ABONOS ESPECÍFICOS ---
 
     sobrante_bolsa_fifo = 0.0
-
-    edit_abonos = edit_abonos.fillna({
-        "Valor_Abono": 0.0,
-        "Modo": "FIFO (Hacia Deuda Antigua)"
-    })
 
     abonos_especificos = edit_abonos[
         (edit_abonos["Modo"] == "Periodo(s) Específico(s)") &
@@ -487,12 +487,14 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
 
     c1.metric("Valor Total Cuota Parte", f"$ {total_cuota_parte:,.0f}")
     c2.metric("Deuda Bruta Total", f"$ {total_bruto:,.0f}")
+
     c3.metric(
         "Total Abonos",
         f"$ {abonos_totales:,.0f}",
         delta=f"-{abonos_totales:,.0f}",
         delta_color="inverse"
     )
+
     c4.metric("Intereses Vigentes", f"$ {intereses_vigentes:,.0f}")
     c5.metric("SALDO FINAL", f"$ {saldo_final:,.0f}")
 
