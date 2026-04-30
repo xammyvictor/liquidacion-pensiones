@@ -4,20 +4,15 @@ from datetime import date
 from dateutil.relativedelta import relativedelta
 import io
 
-# Configuración de página
 st.set_page_config(
     page_title="Liquidador Pasivocol DTF",
     page_icon="🏦",
     layout="wide"
 )
 
-# --- FUNCIONES DE CÓMPUTO ACTUARIAL ---
+# --- FUNCIONES ---
 
 def dias_360(fecha_inicio, fecha_fin):
-    """
-    Calcula la diferencia de días usando la convención 30/360.
-    Inclusivo (+1).
-    """
     if fecha_inicio > fecha_fin:
         return 0
 
@@ -51,13 +46,10 @@ def cargar_tasas_banrep(file):
         tasas_map = {}
 
         for _, row in df_data.iterrows():
-            f_val = row.iloc[0]
-            t_val = row.iloc[1]
-
-            dt = pd.to_datetime(f_val, errors="coerce")
+            dt = pd.to_datetime(row.iloc[0], errors="coerce")
 
             try:
-                rate = float(t_val)
+                rate = float(row.iloc[1])
             except:
                 rate = None
 
@@ -139,7 +131,7 @@ def to_excel(df_liq, df_abonos, nombre_pensionado):
     return output.getvalue()
 
 
-# --- INTERFAZ STREAMLIT ---
+# --- INTERFAZ ---
 
 st.title("🏦 Liquidador Pro - Cuotas Partes con Selección de Periodos")
 st.markdown(
@@ -228,7 +220,7 @@ with tabs_input[0]:
     mesadas_map = edit_mesadas.set_index("Año")["Mesada_Mensual"].to_dict()
 
 
-# --- GENERAR LISTA DE PERIODOS ---
+# --- PERIODOS DISPONIBLES ---
 
 lista_periodos_posibles = []
 temp_fecha = f_inicio.replace(day=1)
@@ -242,8 +234,8 @@ with tabs_input[1]:
     st.subheader("Registro de Abonos con Selección Múltiple")
 
     st.info(
-        "💡 En 'Seleccionar Mes(es)', el orden elegido será respetado "
-        "al aplicar el abono específico."
+        "💡 Puede agregar varios abonos. En 'Seleccionar Mes(es)', "
+        "el orden elegido será respetado al aplicar el abono específico."
     )
 
     if "abonos_data" not in st.session_state:
@@ -290,9 +282,13 @@ with tabs_input[1]:
         },
         num_rows="dynamic",
         use_container_width=True,
-        key=f"editor_abonos_{len(lista_periodos_posibles)}"
+        key="editor_abonos"
     )
 
+    st.session_state.abonos_data = edit_abonos.copy()
+
+
+# --- CÁLCULO ---
 
 if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
 
@@ -303,8 +299,6 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
 
         if tasas_db:
             st.success("✅ Tasas cargadas satisfactoriamente.")
-
-    # 1. Generar registros de deuda bruta
 
     resultados_liq = []
     fecha_actual = f_inicio.replace(day=1)
@@ -356,9 +350,14 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
         for res in resultados_liq
     }
 
-    # 2. Procesar abonos específicos respetando el orden seleccionado
+    # --- ABONOS ESPECÍFICOS ---
 
     sobrante_bolsa_fifo = 0.0
+
+    edit_abonos = edit_abonos.fillna({
+        "Valor_Abono": 0.0,
+        "Modo": "FIFO (Hacia Deuda Antigua)"
+    })
 
     abonos_especificos = edit_abonos[
         (edit_abonos["Modo"] == "Periodo(s) Específico(s)") &
@@ -387,8 +386,7 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
                 - res["Abono FIFO a Int."]
             )
 
-            pago_int = min(int_pdte, valor_disponible)
-            pago_int = max(pago_int, 0)
+            pago_int = min(max(int_pdte, 0), valor_disponible)
 
             res["Abono Específico a Int."] += round(pago_int, 2)
             valor_disponible -= pago_int
@@ -399,8 +397,7 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
                 - res["Abono FIFO a Cap."]
             )
 
-            pago_cap = min(cap_pdte, valor_disponible)
-            pago_cap = max(pago_cap, 0)
+            pago_cap = min(max(cap_pdte, 0), valor_disponible)
 
             res["Abono Específico a Cap."] += round(pago_cap, 2)
             valor_disponible -= pago_cap
@@ -411,7 +408,7 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
         if valor_disponible > 0:
             sobrante_bolsa_fifo += valor_disponible
 
-    # 3. Procesar abonos FIFO
+    # --- ABONOS FIFO ---
 
     bolsa_pagos_fifo = edit_abonos[
         (edit_abonos["Modo"] == "FIFO (Hacia Deuda Antigua)") &
@@ -434,10 +431,7 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
             - res["Abono Específico a Int."]
         )
 
-        int_remanente = max(int_remanente, 0)
-
-        pago_fifo_int = min(int_remanente, bolsa_pagos_fifo)
-        pago_fifo_int = max(pago_fifo_int, 0)
+        pago_fifo_int = min(max(int_remanente, 0), bolsa_pagos_fifo)
 
         res["Abono FIFO a Int."] = round(pago_fifo_int, 2)
         bolsa_pagos_fifo -= pago_fifo_int
@@ -447,10 +441,7 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
             - res["Abono Específico a Cap."]
         )
 
-        cap_remanente = max(cap_remanente, 0)
-
-        pago_fifo_cap = min(cap_remanente, bolsa_pagos_fifo)
-        pago_fifo_cap = max(pago_fifo_cap, 0)
+        pago_fifo_cap = min(max(cap_remanente, 0), bolsa_pagos_fifo)
 
         res["Abono FIFO a Cap."] = round(pago_fifo_cap, 2)
         bolsa_pagos_fifo -= pago_fifo_cap
@@ -471,7 +462,6 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
     # --- RESULTADOS ---
 
     st.divider()
-
     st.subheader("📋 Resumen Post-Imputación")
 
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -495,32 +485,16 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
 
     saldo_final = df_final["Saldo Periodo"].sum()
 
-    c1.metric(
-        "Valor Total Cuota Parte",
-        f"$ {total_cuota_parte:,.0f}"
-    )
-
-    c2.metric(
-        "Deuda Bruta Total",
-        f"$ {total_bruto:,.0f}"
-    )
-
+    c1.metric("Valor Total Cuota Parte", f"$ {total_cuota_parte:,.0f}")
+    c2.metric("Deuda Bruta Total", f"$ {total_bruto:,.0f}")
     c3.metric(
         "Total Abonos",
         f"$ {abonos_totales:,.0f}",
         delta=f"-{abonos_totales:,.0f}",
         delta_color="inverse"
     )
-
-    c4.metric(
-        "Intereses Vigentes",
-        f"$ {intereses_vigentes:,.0f}"
-    )
-
-    c5.metric(
-        "SALDO FINAL",
-        f"$ {saldo_final:,.0f}"
-    )
+    c4.metric("Intereses Vigentes", f"$ {intereses_vigentes:,.0f}")
+    c5.metric("SALDO FINAL", f"$ {saldo_final:,.0f}")
 
     df_view = df_final.copy()
 
