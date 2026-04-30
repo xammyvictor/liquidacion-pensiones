@@ -93,7 +93,7 @@ def to_excel(df_liq, df_abonos, nombre_pensionado):
 # --- INTERFAZ STREAMLIT ---
 
 st.title("🏦 Liquidador Pro - Cuotas Partes con Selección de Periodos")
-st.markdown("Sincronizado con **UGPP**. Seleccione los meses específicos para aplicar abonos.")
+st.markdown("Sincronizado con **UGPP**. Seleccione los meses específicos para aplicar abonos en el orden deseado.")
 
 with st.sidebar:
     st.header("1. Datos Técnicos")
@@ -118,7 +118,7 @@ with tabs_input[0]:
 
     años_rango = list(range(f_inicio.year, f_fin.year + 1))
     df_mesadas_anuales = pd.DataFrame({"Año": años_rango, "Mesada_Mensual": [3374717.0] * len(años_rango)})
-    edit_mesadas = st.data_editor(df_mesadas_anuales, column_config={"Año": st.column_config.NumberColumn(disabled=True, format="%d"), "Mesada_Mensual": st.column_config.NumberColumn("Valor Mesada ($)", format="$ %d")}, use_container_width=True)
+    edit_mesadas = st.data_editor(df_mesadas_anuales, column_config={"Año": st.column_config.NumberColumn(disabled=True, format="%d"), "Mesada_Mensual": st.column_config.NumberColumn("Valor Mesada ($)", format="$ % d")}, use_container_width=True)
     mesadas_map = edit_mesadas.set_index("Año")["Mesada_Mensual"].to_dict()
 
 # --- GENERAR LISTA DE PERIODOS ACTUALIZADA ---
@@ -130,7 +130,7 @@ while temp_fecha <= f_fin:
 
 with tabs_input[1]:
     st.subheader("Registro de Abonos con Selección Múltiple")
-    st.info("💡 Haz **doble clic** o presiona **Enter** en la celda 'Seleccionar Mes(es)' para desplegar la lista de meses.")
+    st.info("💡 Haz **doble clic** o presiona **Enter** en la celda 'Seleccionar Mes(es)' para desplegar la lista. El abono se imputará en el **orden en que selecciones los periodos**.")
     
     # Inicialización robusta del estado de abonos
     if 'abonos_data' not in st.session_state:
@@ -148,12 +148,11 @@ with tabs_input[1]:
     )
 
     # El editor de datos configurado para multiselección
-    # Se usa una 'key' dinámica basada en la longitud de la lista de periodos para forzar refresco
     edit_abonos = st.data_editor(
         st.session_state.abonos_data,
         column_config={
             "Fecha_Abono": st.column_config.DateColumn("Fecha Pago", required=True),
-            "Valor_Abono": st.column_config.NumberColumn("Valor Pagado ($)", format="$ %d", min_value=0.0),
+            "Valor_Abono": st.column_config.NumberColumn("Valor Pagado ($)", format="$ % d", min_value=0.0),
             "Modo": st.column_config.SelectboxColumn(
                 "Modo de Aplicación", 
                 options=["FIFO (Hacia Deuda Antigua)", "Periodo(s) Específico(s)"],
@@ -162,7 +161,7 @@ with tabs_input[1]:
             "Periodos_Destino": st.column_config.MultiselectColumn(
                 "Seleccionar Mes(es)", 
                 options=lista_periodos_posibles,
-                help="Seleccione los meses específicos a los que desea aplicar este abono"
+                help="El abono se aplicará en el orden de los elementos seleccionados aquí."
             )
         },
         num_rows="dynamic",
@@ -201,24 +200,31 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
         })
         fecha_actual += relativedelta(months=1)
 
-    # 2. Procesar Abonos Específicos
+    # 2. Procesar Abonos Específicos (Siguiendo el orden de selección)
     sobrante_bolsa_fifo = 0.0
     abonos_especificos = edit_abonos[(edit_abonos["Modo"] == "Periodo(s) Específico(s)") & (edit_abonos["Valor_Abono"] > 0)]
     
     for _, abono in abonos_especificos.iterrows():
+        # Los periodos seleccionados se iteran en el orden en que están en la lista (orden de selección)
         targets = abono["Periodos_Destino"]
         if not isinstance(targets, list):
             targets = []
             
         valor_disponible = abono["Valor_Abono"]
         
-        for res in resultados_liq:
-            if res["Periodo"] in targets:
+        for target_period in targets:
+            # Buscamos el registro correspondiente en la lista de resultados de liquidación
+            # Usamos un generador para encontrar el primer match
+            res = next((r for r in resultados_liq if r["Periodo"] == target_period), None)
+            
+            if res:
+                # Pagar intereses pendientes del periodo seleccionado
                 int_pdte = res["Int. Bruto"] - res["Abono Específico a Int."]
                 pago_int = min(int_pdte, valor_disponible)
                 res["Abono Específico a Int."] += round(pago_int, 2)
                 valor_disponible -= pago_int
                 
+                # Pagar capital del periodo seleccionado
                 cap_pdte = res["Cap. Bruto"] - res["Abono Específico a Cap."]
                 pago_cap = min(cap_pdte, valor_disponible)
                 res["Abono Específico a Cap."] += round(pago_cap, 2)
@@ -227,10 +233,11 @@ if st.button("🚀 Calcular e Imputar Pagos", type="primary"):
                 if valor_disponible <= 0:
                     break
         
+        # Si sobra dinero después de cubrir los periodos seleccionados (en orden), va a la bolsa FIFO
         if valor_disponible > 0:
             sobrante_bolsa_fifo += valor_disponible
 
-    # 3. Procesar Abonos FIFO
+    # 3. Procesar Abonos FIFO (Bolsa General + Excedentes de Específicos)
     bolsa_pagos_fifo = edit_abonos[(edit_abonos["Modo"] == "FIFO (Hacia Deuda Antigua)") & (edit_abonos["Valor_Abono"] > 0)]["Valor_Abono"].sum()
     bolsa_pagos_fifo += sobrante_bolsa_fifo
     
